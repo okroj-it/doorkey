@@ -79,6 +79,10 @@ run "app mode" env DOORKEY_DATA_DIR="$DATA" bun test/app-mode-e2e.ts lookup
 doorkey_app "FAKE_WS_REFUSE=1" "DOORKEY_ADMIN_USERS=alice"
 run "app mode, users not readable" bun test/app-mode-e2e.ts fallback
 
+# The CLI as the backup hook runs it (docker exec): settings from /data too.
+run "CLI in app mode" env -i PATH="$PATH" HOME="$HOME" DOORKEY_MODE=app SUPERVISOR_URL=http://127.0.0.1:18124 \
+  SUPERVISOR_TOKEN=test DOORKEY_DATA_DIR="$DATA" bun cli/doorkey.ts db:checkpoint
+
 if grep -iE "unhandled" "$LOGS/doorkey.log" >/dev/null; then
   echo "== server errors"; grep -i "unhandled" "$LOGS/doorkey.log" | head; failed=1
 fi
