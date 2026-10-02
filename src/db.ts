@@ -1,7 +1,20 @@
 import { SQL } from "bun";
 import { config } from "./config.ts";
+import { normaliseRow, param } from "./db-values.ts";
 
 export const sql = new SQL({ url: config.databaseUrl, max: 5 });
+
+/**
+ * `sql` with the values the drivers disagree on handled explicitly: see
+ * db-values.ts. Same tagged-template shape, so a query only swaps the tag.
+ */
+export async function q<T = Record<string, unknown>[]>(
+  strings: TemplateStringsArray,
+  ...values: unknown[]
+): Promise<T> {
+  const rows = (await sql(strings, ...values.map(param))) as Record<string, unknown>[];
+  return rows.map(normaliseRow) as T;
+}
 
 export type AttemptResult =
   | "granted"
