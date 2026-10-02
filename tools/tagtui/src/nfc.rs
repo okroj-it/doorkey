@@ -183,8 +183,10 @@ impl Reader {
         }
     }
 
-    /// Type 2 WRITE (0xA2): one page. The tag answers with a 4-bit ACK; a
-    /// NAK (protected page, locked page, bad address) comes back as an error.
+    /// Type 2 WRITE (0xA2): one page. Ok does NOT mean the page changed:
+    /// genuine NXP chips answer a refused write (protected or locked page)
+    /// with a 4-bit NAK that the PN532 reports like the ACK, while clones stay
+    /// silent and get an error. Callers verify by reading back.
     pub fn t2_write(&mut self, page: u8, data: [u8; 4]) -> Result<()> {
         let cmd = [0xA2, page, data[0], data[1], data[2], data[3]];
         self.dev

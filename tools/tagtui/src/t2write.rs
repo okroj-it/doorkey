@@ -142,6 +142,15 @@ pub fn protect(r: &mut Reader, master: &[u8]) -> Result<Protection> {
     r.t2_write(p.cfg1, cfg1)?;
     cfg0[3] = type2::PROTECT_FROM;
     r.t2_write(p.cfg0, cfg0)?;
+    // A refused write can look like a successful one, so read the
+    // configuration back before calling it protected.
+    let back = r.t2_read(p.cfg0)?;
+    if back[..4] != cfg0 || back[4..8] != cfg1 {
+        bail!(
+            "the tag did not take the configuration (CFG0 {})",
+            hex::encode_upper(&back[..4])
+        );
+    }
 
     // Fresh selection, then prove the password opens it.
     r.select()?;
@@ -165,6 +174,10 @@ pub fn unprotect(r: &mut Reader, master: &[u8]) -> Result<Protection> {
 
     if target(r)?.protected {
         bail!("AUTH0 did not change — the tag is still protected");
+    }
+    // The factory password must work again, or the next protect would fail.
+    if r.t2_auth([0xFF; 4]).ok() != Some([0, 0]) {
+        bail!("protection removed, but the factory password does not authenticate");
     }
     Ok(Protection::Changed)
 }
