@@ -81,6 +81,8 @@ pub fn describe(r: &Record) -> String {
         (0x00, _) => "empty record".into(),
         (0x02, b"application/vnd.wfa.wsc") => wifi(p),
         (0x02, b"text/vcard" | b"text/x-vcard") => vcard(&String::from_utf8_lossy(p)),
+        (0x02, b"application/vnd.bluetooth.ep.oob") => bluetooth_classic(p),
+        (0x02, b"application/vnd.bluetooth.le.oob") => bluetooth_le(p),
         (0x02, t) => mime(&String::from_utf8_lossy(t), p),
         (0x03, t) => format!("URI  {}", String::from_utf8_lossy(t)),
         (0x04, b"android.com:pkg") => {
@@ -194,6 +196,60 @@ fn vcard(card: &str) -> String {
         out.extend(all(k).iter().filter(|v| !v.is_empty()).map(|v| v.replace(';', " ")));
     }
     out.join(" · ")
+}
+
+/// Bluetooth EIR / AD structures: length (covering type and data), type, data.
+fn ad_structs(mut b: &[u8]) -> Vec<(u8, &[u8])> {
+    let mut out = Vec::new();
+    while let [len, rest @ ..] = b {
+        let n = *len as usize;
+        if n == 0 || rest.len() < n {
+            break;
+        }
+        out.push((rest[0], &rest[1..n]));
+        b = &rest[n..];
+    }
+    out
+}
+
+/// Bluetooth addresses are stored least significant byte first.
+fn bd_addr(b: &[u8]) -> String {
+    b.iter().rev().map(|x| format!("{x:02X}")).collect::<Vec<_>>().join(":")
+}
+
+fn bt_name(ad: &[(u8, &[u8])]) -> String {
+    // 0x09 complete local name, 0x08 shortened
+    ad.iter()
+        .find(|(t, _)| *t == 0x09)
+        .or_else(|| ad.iter().find(|(t, _)| *t == 0x08))
+        .map_or(String::new(), |(_, v)| format!("  \"{}\"", String::from_utf8_lossy(v)))
+}
+
+/// Classic (BR/EDR) pairing: OOB length (2, LE), address (6), then EIR data.
+fn bluetooth_classic(p: &[u8]) -> String {
+    let Some(addr) = p.get(2..8) else { return "Bluetooth, malformed".into() };
+    let ad = ad_structs(&p[8..]);
+    let class = ad
+        .iter()
+        .find(|(t, v)| *t == 0x0D && v.len() == 3)
+        .map_or(String::new(), |(_, v)| format!("  class {:02X}{:02X}{:02X}", v[2], v[1], v[0]));
+    format!("Bluetooth  {}{}{class}", bd_addr(addr), bt_name(&ad))
+}
+
+/// LE pairing: AD structures only, with the address in an 0x1B structure.
+fn bluetooth_le(p: &[u8]) -> String {
+    let ad = ad_structs(p);
+    let addr = ad.iter().find(|(t, v)| *t == 0x1B && v.len() == 7).map_or("address ?".into(), |(_, v)| {
+        format!("{} ({})", bd_addr(&v[..6]), if v[6] & 1 == 1 { "random" } else { "public" })
+    });
+    let role = match ad.iter().find(|(t, v)| *t == 0x1C && v.len() == 1).map(|(_, v)| v[0]) {
+        Some(0x00) => "  peripheral",
+        Some(0x01) => "  central",
+        Some(0x02) => "  peripheral (central possible)",
+        Some(0x03) => "  central (peripheral possible)",
+        _ => "",
+    };
+    format!("Bluetooth LE  {addr}{}{role}", bt_name(&ad))
 }
 
 /// MIME-typed record. Text types are shown; anything else is named.
@@ -392,6 +448,29 @@ mod tests {
         // No FN: fall back to the structured name.
         let bare = "BEGIN:VCARD\nN:Doe;John\nEND:VCARD";
         assert_eq!(describe(&rec(2, b"text/x-vcard", bare.as_bytes())), "contact  John Doe");
+    }
+
+    #[test]
+    fn bluetooth_pairing() {
+        // Classic: length, address 00:1A:7D:DA:71:13 (stored reversed), name, class 240404
+        let mut classic = vec![0x00, 0x00, 0x13, 0x71, 0xDA, 0x7D, 0x1A, 0x00];
+        classic.extend([0x08, 0x09, b'S', b'p', b'e', b'a', b'k', b'e', b'r']);
+        classic.extend([0x04, 0x0D, 0x04, 0x04, 0x24]);
+        classic[0] = classic.len() as u8;
+        assert_eq!(
+            describe(&rec(2, b"application/vnd.bluetooth.ep.oob", &classic)),
+            "Bluetooth  00:1A:7D:DA:71:13  \"Speaker\"  class 240404"
+        );
+        // LE: random address, peripheral, shortened name
+        let le = [
+            0x08, 0x1B, 0x66, 0x55, 0x44, 0x33, 0x22, 0xC1, 0x01, //
+            0x02, 0x1C, 0x00, //
+            0x04, 0x08, b'T', b'a', b'g',
+        ];
+        assert_eq!(
+            describe(&rec(2, b"application/vnd.bluetooth.le.oob", &le)),
+            "Bluetooth LE  C1:22:33:44:55:66 (random)  \"Tag\"  peripheral"
+        );
     }
 
     #[test]
