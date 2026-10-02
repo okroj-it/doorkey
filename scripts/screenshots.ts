@@ -21,7 +21,7 @@ if (!ADMIN_TOKEN)
   throw new Error("usage: bun scripts/screenshots.ts <admin-enroll-token>");
 
 const browser = await puppeteer.launch({
-  executablePath: "/usr/bin/google-chrome-stable",
+  executablePath: process.env.CHROME_PATH ?? "/usr/bin/google-chrome-stable",
   headless: true,
   protocolTimeout: 30_000,
   args: [

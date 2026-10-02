@@ -454,7 +454,7 @@ HA_URL=http://127.0.0.1:18123 HA_TOKEN=dev HA_LOCK_ENTITY=lock.front_door \
 <details>
 <summary><b>Browser tests</b> — real Chrome, CDP virtual authenticators</summary>
 
-All three need Chrome at `/usr/bin/google-chrome-stable`, and the server on `http://localhost:18080` with `DOORKEY_RP_ID=localhost` and `DOORKEY_ORIGIN=http://localhost:18080`, against an empty database.
+All three need Chrome at `/usr/bin/google-chrome-stable` (or `CHROME_PATH`), and the server on `http://localhost:18080` with `DOORKEY_RP_ID=localhost` and `DOORKEY_ORIGIN=http://localhost:18080`, against an empty database.
 
 **Admin passkey** — registration, sign-out, sign-in, expiry, refusals. Needs `DOORKEY_TAP_MODE=static`, `DOORKEY_STATIC_PATH=abc123secretpath`:
 

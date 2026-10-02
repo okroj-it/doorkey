@@ -38,7 +38,7 @@ const scriptCalls = async () =>
   ).filter((c) => c.path === "/api/services/script/turn_on");
 
 const browser = await puppeteer.launch({
-  executablePath: "/usr/bin/google-chrome-stable",
+  executablePath: process.env.CHROME_PATH ?? "/usr/bin/google-chrome-stable",
   headless: true,
   // Fail fast rather than hang for three minutes on a stuck evaluate.
   protocolTimeout: 30_000,
