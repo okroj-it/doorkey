@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [master]
+  push:
+    branches: [master]
+
+# Pull requests come from forks too: the token can only read.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: package.json
+      - run: bun install --frozen-lockfile
+      - run: bun install --frozen-lockfile
+        working-directory: web
+      - name: Type check
+        run: bun run check
+      - name: Unit tests
+        run: bun test
+      - name: Build the web pages
+        run: bun run build:web
+
+  e2e:
+    name: e2e (${{ matrix.db }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        db: [sqlite, postgres]
+    services:
+      # Started for both jobs (services cannot depend on the matrix); only
+      # the postgres one points DATABASE_URL at it.
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_PASSWORD: e2e
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: package.json
+      - run: bun install --frozen-lockfile
+      - run: bun install --frozen-lockfile
+        working-directory: web
+      - run: bun run build:web
+      - name: Browser and data-layer tests
+        env:
+          DATABASE_URL: ${{ matrix.db == 'postgres' && 'postgres://postgres:e2e@127.0.0.1:5432/postgres' || 'sqlite:///tmp/doorkey-e2e.db' }}
+        run: |
+          export CHROME_PATH="$(command -v google-chrome-stable || command -v google-chrome)"
+          scripts/e2e.sh
+
+  tagtui:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: tools/tagtui
+    steps:
+      - uses: actions/checkout@v4
+      - name: libnfc (tagtui links the system library)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libnfc-dev pkg-config
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tools/tagtui
+      - run: cargo test --locked
+      - run: cargo clippy --locked --all-targets -- -D warnings
