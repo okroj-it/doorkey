@@ -4,6 +4,7 @@ import { config } from "../config.ts";
 import { generateCode, hashCode } from "../codes.ts";
 import { hashToken, newToken } from "../actions/policy.ts";
 import * as db from "../db.ts";
+import { enrolTag, setTagActiveByUid } from "../tags.ts";
 import { constraintKind } from "../db-values.ts";
 import * as ha from "../ha.ts";
 import * as lockout from "../lockout.ts";
@@ -392,6 +393,32 @@ admin.delete("/api/actions/:id/roles/:role", async (c) => {
   if (!action || roleId === null) return c.json({ error: "not found" }, 404);
   await db.disallowActionRole(action.id, roleId);
   await db.logAdminEvent("action_role_denied", `${action.slug} -/- ${name}`, ip(c));
+  return c.json({ ok: true });
+});
+
+admin.get("/api/tags", async (c) => c.json(await db.listTags()));
+
+admin.post("/api/tags", async (c) => {
+  const b = await body<{ code: string; label: string }>(c);
+  if (typeof b.code !== "string" || !b.code.trim()) return c.json({ error: "paste the tag code" }, 400);
+  let t;
+  try {
+    t = await enrolTag(b.code, typeof b.label === "string" ? b.label : undefined);
+  } catch (err) {
+    // Decoding and KEK problems: worded for the person who pasted the code.
+    return c.json({ error: (err as Error).message }, 400);
+  }
+  await db.logAdminEvent(t.replaced ? "tag_reenrolled" : "tag_enrolled", `${t.label} (${t.uid})`, ip(c));
+  return c.json(t);
+});
+
+admin.patch("/api/tags/:uid", async (c) => {
+  const uid = c.req.param("uid").toLowerCase();
+  const b = await body<{ active: boolean }>(c);
+  if (typeof b.active !== "boolean") return c.json({ error: "active required" }, 400);
+  if (!/^[0-9a-f]{14}$/.test(uid)) return c.json({ error: "bad uid" }, 400);
+  if (!(await setTagActiveByUid(uid, b.active))) return c.json({ error: "no such tag" }, 404);
+  await db.logAdminEvent(b.active ? "tag_enabled" : "tag_disabled", uid, ip(c));
   return c.json({ ok: true });
 });
 

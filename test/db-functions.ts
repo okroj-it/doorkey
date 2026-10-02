@@ -7,9 +7,13 @@
  *
  * Run by scripts/e2e.sh for Postgres and SQLite.
  */
+import { createCipheriv, randomBytes } from "node:crypto";
+import { unwrapKey, wrapKey } from "../src/auth/kek.ts";
 import { hashCode } from "../src/codes.ts";
 import { constraintKind } from "../src/db-values.ts";
 import * as db from "../src/db.ts";
+import { encodeTagCode } from "../src/tag-code.ts";
+import { enrolTag, setTagActiveByUid } from "../src/tags.ts";
 
 const fail: string[] = [];
 const check = (name: string, ok: boolean) => {
@@ -162,6 +166,32 @@ try {
     constraintKind(e) === "foreign_key",
   );
 }
+
+// --- tag enrolment from a tag code -----------------------------------------
+
+const k3 = new Uint8Array(16).fill(7);
+const tagUid = new Uint8Array([0x04, 9, 8, 7, 6, 5, 4]);
+const porchCode = encodeTagCode({ uid: tagUid, wrapped: wrapKey(k3), label: "Porch" });
+const enrolled = await enrolTag(porchCode);
+check("a tag code enrols the tag", !enrolled.replaced && enrolled.uid === "04090807060504" && enrolled.label === "Porch");
+const porch = await db.findTagByUid(tagUid);
+check("the enrolled key unwraps to the tag's K3", porch !== null && Buffer.from(unwrapKey(porch.mac_key_enc)).equals(Buffer.from(k3)));
+const again = await enrolTag(porchCode, "Back porch");
+check("re-enrolling replaces instead of duplicating", again.replaced && again.label === "Back porch" && again.id === enrolled.id);
+
+// Wrapped with some other KEK: must be refused, not saved to fail every tap.
+const otherKek = randomBytes(32);
+const nonce = randomBytes(12);
+const cipher = createCipheriv("aes-256-gcm", otherKek, nonce);
+const foreign = Buffer.concat([nonce, cipher.update(k3), cipher.final(), cipher.getAuthTag()]);
+try {
+  await enrolTag(encodeTagCode({ uid: new Uint8Array([0x04, 1, 1, 1, 1, 1, 1]), wrapped: foreign, label: "x" }));
+  check("a code wrapped with another KEK is refused", false);
+} catch (e) {
+  check("a code wrapped with another KEK is refused", String(e).includes("different KEK"));
+}
+
+check("disabling by UID works", (await setTagActiveByUid("04090807060504", false)) && (await db.findTagByUid(tagUid))?.active === false);
 
 console.log(fail.length ? `\n  ${fail.length} failed` : "\n  all passed");
 await db.sql.end();

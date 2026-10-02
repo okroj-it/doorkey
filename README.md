@@ -143,10 +143,12 @@ flowchart TB
 
 **Provisioning** needs a PN532 reader. Two tools, same key scheme:
 
-- **`tools/tagtui`** — Rust TUI. Dry runs by default; reading and tapping never write. Writing the URL and changing keys sit behind explicit confirmation, ordered so a factory-K0 session can repair the tag until the very last step. Enrols the tag (UID, label, wrapped K3) straight into Postgres. It also reads plain NFC Type 2 tags (NTAG21x, Ultralight and compatible clones) without writing — model, capacity and locks, and every record of the NDEF message decoded: URLs, text, Smart Posters, Wi-Fi networks (key masked), contacts, Bluetooth pairing, Android app records and the handover/signature types. DNA-only actions refuse them. It also writes URLs to them, optionally password write-protected (see below).
-- **`tools/provision.py`** — a staged CLI: `--check` (auth only, writes nothing), `--write-url`, then `--keys` (irreversible: locks the tag to your master).
+- **`tools/tagtui`** — Rust TUI. Dry runs by default; reading and tapping never write. Writing the URL and changing keys sit behind explicit confirmation, ordered so a factory-K0 session can repair the tag until the very last step. Shows the tag's **tag code** for enrolment, and can still insert it straight into Postgres. It also reads plain NFC Type 2 tags (NTAG21x, Ultralight and compatible clones) without writing — model, capacity and locks, and every record of the NDEF message decoded: URLs, text, Smart Posters, Wi-Fi networks (key masked), contacts, Bluetooth pairing, Android app records and the handover/signature types. DNA-only actions refuse them. It also writes URLs to them, optionally password write-protected (see below).
+- **`tools/provision.py`** — a staged CLI: `--check` (auth only, writes nothing), `--write-url`, then `--keys` (irreversible: locks the tag to your master), which prints the tag code.
 
 Both take your public origin (`--origin` or `DOORKEY_ORIGIN`, e.g. `https://door.example.com`) and write `<host>/k/sun?picc=…&cmac=…`. That one URL serves every tag.
+
+**Enrolling a provisioned tag** needs no database access: both tools print a one-line **tag code** — `dktag1.<uid>.<wrapped K3>.<label>`. Paste it into the admin page (Door → DNA tags) or run `bun cli/doorkey.ts tag:add <code>`. It carries the tag's key only wrapped with your KEK, and doorkey refuses it unless its own `DOORKEY_TAG_KEK` opens it — so a tag provisioned with the wrong KEK is caught at enrolment instead of failing every tap. `tags` and `tag:enable` / `tag:disable` cover the rest.
 
 ### Plain tags (`static`, and action tokens)
 
@@ -264,7 +266,7 @@ action:log [--tail 40]
   </tr>
 </table>
 
-**Door tab:** create codes (plaintext shown once), set or change expiry, cap uses, revoke, re-enable, regenerate and delete; clear a lockout; review the door and admin audit logs; manage the admin passkeys.
+**Door tab:** create codes (plaintext shown once), set or change expiry, cap uses, revoke, re-enable, regenerate and delete; clear a lockout; review the door and admin audit logs; manage the admin passkeys; list, enable/disable and enrol DNA tags.
 
 **Actions tab:** create actions from a live list of your HA scripts; toggle *DNA required*, *home-only* and *active*; issue or rotate a plain-tag URL (shown once, with copy); link or unlink provisioned DNA tags; allow roles. Create and disable action users, grant roles, mint single-use enrolment links, and see and remove each user's passkeys. Unused roles can be deleted. Every change is in the admin activity log.
 
