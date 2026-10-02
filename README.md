@@ -366,6 +366,8 @@ Required: `DOORKEY_ORIGIN` (your public `https://` origin, scheme and host only)
 | `MQTT_DISCOVERY_PREFIX` | `homeassistant` | |
 | `MQTT_NODE_ID` | `doorkey` | |
 | `TZ` | `UTC` | schedules and log times are evaluated here |
+| `DOORKEY_MODE` | detected | `app` / `standalone`: force Home Assistant app mode on or off (otherwise on when `SUPERVISOR_TOKEN` is set) |
+| `DOORKEY_ADMIN_USERS` | — | app mode only: HA usernames allowed into the admin page if HA's user list cannot be read |
 
 </details>
 
@@ -462,6 +464,8 @@ One command runs the data-layer checks and all three browser suites against a th
 DATABASE_URL=sqlite:///tmp/doorkey-e2e.db scripts/e2e.sh
 DATABASE_URL=postgres://postgres:pw@127.0.0.1:5432/postgres scripts/e2e.sh   # the schema is dropped
 ```
+
+`scripts/e2e-app.sh` does the same for doorkey as a Home Assistant app, against stand-ins for the Supervisor and the Ingress gateway (CI runs it in the SQLite job).
 
 To run one suite by hand: all three need Chrome at `/usr/bin/google-chrome-stable` (or `CHROME_PATH`), and the server on `http://localhost:18080` with `DOORKEY_RP_ID=localhost` and `DOORKEY_ORIGIN=http://localhost:18080`, against an empty database.
 
