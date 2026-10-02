@@ -3,8 +3,9 @@
  *
  * Parameters: Bun's SQLite adapter binds a Date or a plain object as NULL
  * and spreads an array over several parameters, so dates are sent as
- * ISO-8601 UTC text and objects and arrays as JSON text. Postgres casts that
- * text to the column's type.
+ * ISO-8601 UTC text, and for SQLite objects and arrays as JSON text. Postgres
+ * gets objects and arrays as they are: Bun encodes them as JSON itself, and
+ * JSON text would be stored as a JSONB string rather than an array.
  *
  * Rows: SQLite returns dates as text, booleans as 0/1, JSON as text and bytes
  * as a plain Uint8Array. Columns are recognised by name - the schema follows
@@ -18,11 +19,13 @@ const BOOL_COLUMNS = new Set(["active", "require_sun", "home_only", "has_token",
 const JSON_COLUMNS = new Set(["schedule", "transports", "roles", "tags"]);
 const COUNT_COLUMNS = new Set(["n", "users", "actions", "passkeys"]);
 
-export function param(v: unknown): unknown {
+export type Dialect = "postgres" | "sqlite";
+
+export function param(v: unknown, dialect: Dialect): unknown {
   if (v === undefined || v === null) return null;
   if (v instanceof Date) return v.toISOString();
   if (v instanceof Uint8Array) return v;
-  if (typeof v === "object") return JSON.stringify(v);
+  if (typeof v === "object" && dialect === "sqlite") return JSON.stringify(v);
   return v;
 }
 

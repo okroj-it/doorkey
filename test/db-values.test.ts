@@ -2,17 +2,21 @@ import { describe, expect, test } from "bun:test";
 import { normaliseRow, param } from "../src/db-values.ts";
 
 describe("param", () => {
-  test("dates go out as ISO-8601 UTC text", () => {
-    expect(param(new Date(Date.UTC(2026, 9, 2, 21, 30)))).toBe("2026-10-02T21:30:00.000Z");
+  test("dates go out as ISO-8601 UTC text, for both", () => {
+    const d = new Date(Date.UTC(2026, 9, 2, 21, 30));
+    expect([param(d, "sqlite"), param(d, "postgres")]).toEqual(["2026-10-02T21:30:00.000Z", "2026-10-02T21:30:00.000Z"]);
   });
-  test("objects and arrays go out as JSON text", () => {
-    expect(param([{ dow: [1, 3], from: "07:00", to: "09:00" }])).toBe('[{"dow":[1,3],"from":"07:00","to":"09:00"}]');
-    expect(param(["internal", "hybrid"])).toBe('["internal","hybrid"]');
+  test("objects and arrays: JSON text for SQLite, untouched for Postgres", () => {
+    const schedule = [{ dow: [1, 3], from: "07:00", to: "09:00" }];
+    expect(param(schedule, "sqlite")).toBe('[{"dow":[1,3],"from":"07:00","to":"09:00"}]');
+    expect(param(["internal", "hybrid"], "sqlite")).toBe('["internal","hybrid"]');
+    expect(param(schedule, "postgres")).toBe(schedule);
   });
   test("bytes, scalars and null pass through", () => {
     const b = Buffer.from([1, 2]);
-    expect(param(b)).toBe(b);
-    expect([param("x"), param(3), param(true), param(null), param(undefined)]).toEqual(["x", 3, true, null, null]);
+    expect(param(b, "sqlite")).toBe(b);
+    const scalars = ["x", 3, true, null, undefined].map((v) => param(v, "sqlite"));
+    expect(scalars).toEqual(["x", 3, true, null, null]);
   });
 });
 
