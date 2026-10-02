@@ -40,10 +40,10 @@ jobs:
       matrix:
         db: [sqlite, postgres]
     services:
-      # Started for both jobs (services cannot depend on the matrix); only
-      # the postgres one points DATABASE_URL at it.
+      # An empty image skips the service, so the SQLite job does not wait
+      # for a Postgres container it never uses.
       postgres:
-        image: postgres:18-alpine
+        image: ${{ matrix.db == 'postgres' && 'postgres:18-alpine' || '' }}
         env:
           POSTGRES_PASSWORD: e2e
         ports:
@@ -81,8 +81,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
+      # master saves the cache, pull requests only restore it: a cache saved in
+      # a PR is visible to that PR alone and would just use up the quota.
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: tools/tagtui
+          save-if: ${{ github.ref == 'refs/heads/master' }}
       - run: cargo test --locked
       - run: cargo clippy --locked --all-targets -- -D warnings
