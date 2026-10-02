@@ -10,6 +10,7 @@ import { config } from "../src/config.ts";
 import { generateCode, hashCode } from "../src/codes.ts";
 import { hashToken, newToken } from "../src/actions/policy.ts";
 import * as db from "../src/db.ts";
+import { enrolTag, setTagActiveByUid } from "../src/tags.ts";
 import {
   createEnrollment,
   deleteCredential,
@@ -319,6 +320,37 @@ async function actionsCli(cmd: string, args: string[]): Promise<boolean> {
   return false;
 }
 
+// --- DNA tags ----------------------------------------------------------------
+
+async function tagsList(): Promise<void> {
+  const rows = await db.listTags();
+  if (rows.length === 0) return console.log("no tags");
+  console.table(
+    rows.map((t: Record<string, unknown>) => ({
+      uid: t.uid,
+      label: t.label,
+      state: t.active ? "active" : "disabled",
+      opens: t.action ?? "the door",
+      counter: t.last_counter,
+      last_used: ts(t.last_used_at),
+    })),
+  );
+}
+
+async function tagAdd(args: string[]): Promise<void> {
+  const code = args[0];
+  if (!code || code.startsWith("--")) throw new Error("usage: tag:add <code> [--label TEXT]");
+  const t = await enrolTag(code, flag(args, "label"));
+  console.log(`tag ${t.uid} "${t.label}" ${t.replaced ? "re-enrolled (key replaced)" : "enrolled"} - it opens the door until linked to an action`);
+}
+
+async function tagActive(cmd: string, uid: string | undefined): Promise<void> {
+  if (!uid) throw new Error(`usage: ${cmd} <uid>`);
+  const active = cmd === "tag:enable";
+  if (!(await setTagActiveByUid(uid.toLowerCase(), active))) throw new Error(`no tag with uid ${uid}`);
+  console.log(`tag ${uid} ${active ? "enabled" : "disabled"}`);
+}
+
 const [cmd, ...rest] = process.argv.slice(2);
 try {
   await migrate();
@@ -331,6 +363,10 @@ try {
     case "admin:enroll": await adminEnroll(rest); break;
     case "admin:list": await adminList(); break;
     case "admin:revoke": await adminRevoke(rest[0]); break;
+    case "tags": await tagsList(); break;
+    case "tag:add": await tagAdd(rest); break;
+    case "tag:enable":
+    case "tag:disable": await tagActive(cmd, rest[0]); break;
     case "db:checkpoint":
       console.log((await db.checkpoint()) ? "checkpointed" : "nothing to do (not SQLite)");
       break;
@@ -348,6 +384,10 @@ try {
   admin:enroll <label> [--minutes 15]   mint a single-use passkey enrolment link
   admin:list                            enrolled passkeys
   admin:revoke <id>                     remove a passkey
+
+  tags                                  provisioned DNA tags
+  tag:add <code> [--label TEXT]         enrol a tag from the code tagtui / provision.py print
+  tag:disable|tag:enable <uid>
   db:checkpoint                         SQLite: fold the WAL into the file (before a backup)
 
   tap-gated actions (users and passkeys are separate from admin):
