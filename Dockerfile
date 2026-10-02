@@ -1,5 +1,6 @@
 # --- build the keypad ------------------------------------------------------
-FROM oven/bun:1-alpine AS web
+# Keep in step with "packageManager" in package.json (what CI runs).
+FROM oven/bun:1.4.2-alpine AS web
 WORKDIR /build/web
 COPY web/package.json web/bun.lock* ./
 RUN bun install --frozen-lockfile
@@ -7,7 +8,7 @@ COPY web/ ./
 RUN bun run build
 
 # --- runtime ---------------------------------------------------------------
-FROM oven/bun:1-alpine
+FROM oven/bun:1.4.2-alpine
 WORKDIR /app
 
 COPY package.json bun.lock* ./

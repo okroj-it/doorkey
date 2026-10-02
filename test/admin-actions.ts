@@ -34,7 +34,7 @@ const scriptCalls = async () =>
   ).filter((c) => c.path === "/api/services/script/turn_on");
 
 const browser = await puppeteer.launch({
-  executablePath: "/usr/bin/google-chrome-stable",
+  executablePath: process.env.CHROME_PATH ?? "/usr/bin/google-chrome-stable",
   headless: true,
   protocolTimeout: 30_000,
   args: ["--no-sandbox", "--disable-dev-shm-usage"],

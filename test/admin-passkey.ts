@@ -22,7 +22,7 @@ const check = (name: string, ok: boolean) => {
 };
 
 const browser = await puppeteer.launch({
-  executablePath: "/usr/bin/google-chrome-stable",
+  executablePath: process.env.CHROME_PATH ?? "/usr/bin/google-chrome-stable",
   headless: true,
   args: ["--no-sandbox", "--disable-dev-shm-usage"],
 });
