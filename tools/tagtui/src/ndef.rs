@@ -90,17 +90,49 @@ pub fn describe(r: &Record) -> String {
     }
 }
 
-/// NFC Forum URI record prefix codes (the common ones).
+/// NFC Forum URI record prefix codes (URI RTD, table 3). Codes past the
+/// table are reserved and treated as "no prefix".
+const URI_PREFIXES: [&str; 36] = [
+    "",
+    "http://www.",
+    "https://www.",
+    "http://",
+    "https://",
+    "tel:",
+    "mailto:",
+    "ftp://anonymous:anonymous@",
+    "ftp://ftp.",
+    "ftps://",
+    "sftp://",
+    "smb://",
+    "nfs://",
+    "ftp://",
+    "dav://",
+    "news:",
+    "telnet://",
+    "imap:",
+    "rtsp://",
+    "urn:",
+    "pop:",
+    "sip:",
+    "sips:",
+    "tftp:",
+    "btspp://",
+    "btl2cap://",
+    "btgoep://",
+    "tcpobex://",
+    "irdaobex://",
+    "file://",
+    "urn:epc:id:",
+    "urn:epc:tag:",
+    "urn:epc:pat:",
+    "urn:epc:raw:",
+    "urn:epc:",
+    "urn:nfc:",
+];
+
 pub fn uri_prefix(code: u8) -> &'static str {
-    match code {
-        0x01 => "http://www.",
-        0x02 => "https://www.",
-        0x03 => "http://",
-        0x04 => "https://",
-        0x05 => "tel:",
-        0x06 => "mailto:",
-        _ => "",
-    }
+    URI_PREFIXES.get(code as usize).copied().unwrap_or("")
 }
 
 #[cfg(test)]
@@ -146,6 +178,15 @@ mod tests {
     #[test]
     fn chunked_records_are_refused() {
         assert_eq!(records(&[0xB1, 0x01, 0x01, b'U', 0x04]), Err("chunked records are not supported"));
+    }
+
+    #[test]
+    fn uri_prefixes() {
+        assert_eq!(uri_prefix(0x00), "");
+        assert_eq!(uri_prefix(0x04), "https://");
+        assert_eq!(uri_prefix(0x15), "sip:");
+        assert_eq!(uri_prefix(0x23), "urn:nfc:");
+        assert_eq!(uri_prefix(0x24), "", "reserved codes add nothing");
     }
 
     #[test]
