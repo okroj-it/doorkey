@@ -67,6 +67,22 @@ if (mode === "lookup") {
     "ingress port refuses other peers on /admin",
     (await status("http://[::1]:8099/admin")) === 403,
   );
+  // --- framing -----------------------------------------------------------------
+  const framing = async (url: string) =>
+    (await fetch(url)).headers.get("Content-Security-Policy");
+  check(
+    "public pages may not be framed",
+    (await framing(`${PUBLIC}/healthz`)) === "frame-ancestors 'none'" &&
+      (await framing(`${PUBLIC}/admin`)) === "frame-ancestors 'none'",
+  );
+  check(
+    "ingress admin may be framed by Home Assistant only (same origin)",
+    (await framing(`${VIA_INGRESS}/admin`)) === "frame-ancestors 'self'",
+  );
+  check(
+    "a refused ingress request carries it too",
+    (await framing("http://[::1]:8099/admin")) === "frame-ancestors 'self'",
+  );
 
   // --- who gets in -------------------------------------------------------------
   check(
