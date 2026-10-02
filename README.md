@@ -339,6 +339,7 @@ Required: `DOORKEY_ORIGIN` (your public `https://` origin, scheme and host only)
 
 | var | default | |
 |-----|---------|--|
+| `DATABASE_URL` | — | `postgres://user:pw@host:5432/doorkey`, or `sqlite:///data/doorkey.db` for a single file (WAL; back it up after `bun cli/doorkey.ts db:checkpoint`) |
 | `PORT` | `8080` | |
 | `DOORKEY_TAP_MODE` | `static` | `static` \| `sun` \| `dev` |
 | `DOORKEY_TAG_KEK` | — | 64 hex; wraps K3 at rest. Required for `sun` |
@@ -371,7 +372,7 @@ Required: `DOORKEY_ORIGIN` (your public `https://` origin, scheme and host only)
 doorkey is one container. It needs:
 
 - **a public `https://` origin** — passkeys only work in a secure context and bind to the hostname. Terminate TLS in a reverse proxy (Caddy, Traefik, nginx…) or use Cloudflare;
-- **PostgreSQL** — bundled in the compose stack, or any server you already run;
+- **a database** — PostgreSQL (bundled in the compose stack, or any server you already run) or a SQLite file (`DATABASE_URL=sqlite:///data/doorkey.db`, nothing else to run);
 - **Home Assistant's REST API** reachable from the container, and optionally your MQTT broker;
 - **one replica** — WebAuthn challenges and spent action sessions are held in memory.
 
