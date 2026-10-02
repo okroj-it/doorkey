@@ -79,6 +79,7 @@ pub fn describe(r: &Record) -> String {
         }
         (0x01, b"T") if !p.is_empty() => text(p),
         (0x00, _) => "empty record".into(),
+        (0x02, b"application/vnd.wfa.wsc") => wifi(p),
         (0x02, t) => mime(&String::from_utf8_lossy(t), p),
         (0x03, t) => format!("URI  {}", String::from_utf8_lossy(t)),
         (0x04, b"android.com:pkg") => {
@@ -97,6 +98,63 @@ pub fn describe(r: &Record) -> String {
             p.len()
         ),
     }
+}
+
+/// Wi-Fi Simple Config attributes: 2-byte type, 2-byte length, value.
+fn wsc_attrs(mut b: &[u8]) -> Vec<(u16, &[u8])> {
+    let mut out = Vec::new();
+    while b.len() >= 4 {
+        let t = u16::from_be_bytes([b[0], b[1]]);
+        let n = u16::from_be_bytes([b[2], b[3]]) as usize;
+        let Some(v) = b.get(4..4 + n) else { break };
+        out.push((t, v));
+        b = &b[4 + n..];
+    }
+    out
+}
+
+/// A Wi-Fi network as NFC Tools and Android write it. The key is never
+/// shown, only its length: anyone holding the tag can read it anyway, but
+/// it does not belong on a screen.
+fn wifi(p: &[u8]) -> String {
+    let top = wsc_attrs(p);
+    // The fields usually sit inside a Credential (0x100E), but not always.
+    let creds = top
+        .iter()
+        .find(|(t, _)| *t == 0x100E)
+        .map_or(top.clone(), |(_, v)| wsc_attrs(v));
+    let get = |t: u16| creds.iter().find(|(k, _)| *k == t).map(|(_, v)| *v);
+    let word = |t: u16| get(t).filter(|v| v.len() == 2).map(|v| u16::from_be_bytes([v[0], v[1]]));
+
+    let ssid = get(0x1045).map_or("?".into(), |v| String::from_utf8_lossy(v).into_owned());
+    let auth = match word(0x1003) {
+        Some(0x0001) => "open",
+        Some(0x0002) => "WPA-Personal",
+        Some(0x0004) => "shared",
+        Some(0x0008) => "WPA-Enterprise",
+        Some(0x0010) => "WPA2-Enterprise",
+        Some(0x0020) => "WPA2-Personal",
+        Some(0x0022) => "WPA/WPA2-Personal",
+        Some(_) => "other auth",
+        None => "auth ?",
+    };
+    let enc = match word(0x100F) {
+        Some(0x0001) => "none",
+        Some(0x0002) => "WEP",
+        Some(0x0004) => "TKIP",
+        Some(0x0008) => "AES",
+        Some(0x000C) => "AES/TKIP",
+        _ => "?",
+    };
+    let key = match get(0x1027) {
+        Some(k) if !k.is_empty() => format!("key {} chars", k.len()),
+        _ => "no key".into(),
+    };
+    let mac = match get(0x1020) {
+        Some(m) if m.len() == 6 && m != [0xFF; 6] => format!("  MAC {}", hex::encode_upper(m)),
+        _ => String::new(),
+    };
+    format!("Wi-Fi  \"{ssid}\"  {auth}/{enc}  {key}{mac}")
 }
 
 /// MIME-typed record. Text types are shown; anything else is named.
@@ -252,6 +310,35 @@ mod tests {
         assert_eq!(describe(&rec(5, b"", b"ab")), "unknown-type record, 2 bytes");
         assert_eq!(describe(&rec(2, b"text/plain", b"hello\n")), "text/plain  hello");
         assert_eq!(describe(&rec(2, b"image/png", &[0x89, b'P'])), "image/png, 2 bytes");
+    }
+
+    /// A WSC attribute: type, length, value.
+    fn attr(t: u16, v: &[u8]) -> Vec<u8> {
+        let mut a = t.to_be_bytes().to_vec();
+        a.extend_from_slice(&(v.len() as u16).to_be_bytes());
+        a.extend_from_slice(v);
+        a
+    }
+
+    #[test]
+    fn wifi_credential() {
+        let mut cred = attr(0x1026, &[1]);
+        cred.extend(attr(0x1045, b"HomeNet"));
+        cred.extend(attr(0x1003, &[0x00, 0x20]));
+        cred.extend(attr(0x100F, &[0x00, 0x08]));
+        cred.extend(attr(0x1027, b"correct horse"));
+        cred.extend(attr(0x1020, &[0xFF; 6]));
+        let mut payload = attr(0x104A, &[0x10]);
+        payload.extend(attr(0x100E, &cred));
+        let line = describe(&rec(2, b"application/vnd.wfa.wsc", &payload));
+        assert_eq!(line, "Wi-Fi  \"HomeNet\"  WPA2-Personal/AES  key 13 chars");
+        assert!(!line.contains("horse"), "the key is never shown");
+
+        // Open network written without the Credential wrapper.
+        let mut open = attr(0x1045, b"Cafe");
+        open.extend(attr(0x1003, &[0x00, 0x01]));
+        open.extend(attr(0x100F, &[0x00, 0x01]));
+        assert_eq!(describe(&rec(2, b"application/vnd.wfa.wsc", &open)), "Wi-Fi  \"Cafe\"  open/none  no key");
     }
 
     #[test]
