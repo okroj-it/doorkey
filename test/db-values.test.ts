@@ -58,6 +58,8 @@ describe("constraintKind", () => {
   test("Postgres SQLSTATEs", () => {
     expect(constraintKind({ code: "ERR_POSTGRES_SERVER_ERROR", errno: "23505" })).toBe("unique");
     expect(constraintKind({ code: "ERR_POSTGRES_SERVER_ERROR", errno: "23503" })).toBe("foreign_key");
+    // ON DELETE RESTRICT from Postgres 18 on
+    expect(constraintKind({ code: "ERR_POSTGRES_SERVER_ERROR", errno: "23001" })).toBe("foreign_key");
   });
   test("SQLite codes", () => {
     expect(constraintKind({ code: "SQLITE_CONSTRAINT_UNIQUE", errno: 2067 })).toBe("unique");
