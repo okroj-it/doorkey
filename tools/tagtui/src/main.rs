@@ -10,6 +10,7 @@ mod ev2;
 mod ndef;
 mod nfc;
 mod t2write;
+mod tag_code;
 mod type2;
 mod ui;
 

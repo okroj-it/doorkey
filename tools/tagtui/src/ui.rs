@@ -56,6 +56,7 @@ fn key(k: &str, what: &str) -> Vec<Span<'static>> {
 use crate::db::{self, Db};
 use crate::ev2::{self, FACTORY_KEY};
 use crate::nfc::{self, Reader};
+use crate::tag_code;
 use crate::type2;
 use crate::{ndef, t2write};
 
@@ -614,7 +615,7 @@ impl App {
 
         let label = self.label.clone();
         if self.db.client.is_none() {
-            self.err("not connected — press c, or copy the SQL shown below");
+            self.err("not connected — paste the tag code (Database tab) into doorkey's admin page, or press c");
             return;
         }
         match self.db.enrol(&uid, &label, &wrapped) {
@@ -1266,24 +1267,29 @@ impl App {
                 ),
             ]),
             Line::from(Span::styled(
-                "   optional — only enrolment touches Postgres",
+                "   optional — the tag code below enrols without it",
                 Style::new().fg(theme::DIM),
             )),
         ];
         f.render_widget(Paragraph::new(lines).block(panel("Connection")), top);
 
-        let sql = match (&self.last_uid, &self.last_wrapped) {
-            (Some(uid), Some(w)) => Paragraph::new(Line::from(Span::styled(
-                db::sql_for(uid, &self.label, w),
-                Style::new().fg(theme::ACCENT),
-            )))
+        // The tag code works anywhere (admin page, CLI); the SQL only with
+        // direct Postgres access.
+        let enrolment = match (&self.last_uid, &self.last_wrapped) {
+            (Some(uid), Some(w)) => Paragraph::new(vec![
+                Line::from(Span::styled("tag code — paste into doorkey's admin page (Door → DNA tags)", Style::new().fg(theme::DIM))),
+                Line::from(Span::styled(tag_code::encode(uid, w, &self.label), Style::new().fg(theme::ACCENT))),
+                Line::from(""),
+                Line::from(Span::styled("or, with direct Postgres access", Style::new().fg(theme::DIM))),
+                Line::from(Span::styled(db::sql_for(uid, &self.label, w), Style::new().fg(theme::TEXT))),
+            ])
             .wrap(Wrap { trim: false }),
             _ => Paragraph::new(Line::from(Span::styled(
-                "provision a tag to get its enrolment SQL",
+                "provision a tag to get its tag code",
                 Style::new().fg(theme::DIM),
             ))),
         };
-        f.render_widget(sql.block(panel("Enrolment")), bottom);
+        f.render_widget(enrolment.block(panel("Enrolment")), bottom);
     }
 }
 
