@@ -89,6 +89,7 @@ enum Pending {
     WriteUrl,
     ChangeKeys,
     WritePlain,
+    UnprotectPlain,
 }
 
 pub struct App {
@@ -454,6 +455,33 @@ impl App {
         }
     }
 
+    /// Remove a plain tag's write protection and restore its factory password.
+    fn unprotect_plain(&mut self) {
+        let Ok(master) = hex::decode(&self.master) else {
+            self.err("the master key is not valid hex");
+            return;
+        };
+        let Some(r) = self.reader.as_mut() else {
+            self.err("open a reader first");
+            return;
+        };
+        match t2write::unprotect(r, &master) {
+            Ok(p) => {
+                let msg = match p {
+                    t2write::Protection::Changed => "protection removed, factory password restored",
+                    t2write::Protection::AlreadySo => "not protected — nothing to do",
+                };
+                self.write_lines = vec![Line::from(Span::styled(format!("✓ {msg}"), Style::new().fg(theme::GOOD)))];
+                self.ok(msg);
+                self.read_tag();
+            }
+            Err(e) => {
+                self.write_lines = vec![Line::from(Span::styled(format!("✗ {e}"), Style::new().fg(theme::BAD)))];
+                self.err(&format!("unprotect: {e}"));
+            }
+        }
+    }
+
     fn change_keys(&mut self) {
         let (master_hex, meta_hex, kek_hex) =
             (self.master.clone(), self.meta.clone(), self.kek.clone());
@@ -653,6 +681,7 @@ impl App {
                         Pending::WriteUrl => self.write_url(),
                         Pending::ChangeKeys => self.change_keys(),
                         Pending::WritePlain => self.write_plain(),
+                        Pending::UnprotectPlain => self.unprotect_plain(),
                     }
                 }
                 _ => {
@@ -711,6 +740,13 @@ impl App {
                             self.err("protecting needs the master key ('m')");
                         } else {
                             self.pending = Some(Pending::WritePlain);
+                        }
+                    }
+                    KeyCode::Char('R') => {
+                        if self.master.len() != 32 {
+                            self.err("removing protection needs the master key ('m')");
+                        } else {
+                            self.pending = Some(Pending::UnprotectPlain);
                         }
                     }
                     _ => {}
@@ -1081,6 +1117,11 @@ impl App {
                 Span::styled(" write URL  ", Style::new().fg(theme::TEXT)),
                 Span::styled("reversible", Style::new().fg(theme::GOOD)),
             ]),
+            Line::from(vec![
+                Span::styled(" R ", Style::new().bg(theme::FRAME).fg(theme::TEXT)),
+                Span::styled(" remove protection  ", Style::new().fg(theme::TEXT)),
+                Span::styled("needs the master", Style::new().fg(theme::DIM)),
+            ]),
         ];
         f.render_widget(
             Paragraph::new(form).block(panel("Provision")).wrap(Wrap { trim: false }),
@@ -1128,6 +1169,17 @@ impl App {
                     } else {
                         Line::from(Span::styled("Anyone can rewrite it afterwards.", Style::new().fg(theme::DIM)))
                     },
+                ],
+                theme::WARN,
+            ),
+            Pending::UnprotectPlain => (
+                " Remove protection ",
+                vec![
+                    Line::from("Removes this plain tag's write protection."),
+                    Line::from(Span::styled(
+                        "Anyone can rewrite it afterwards.",
+                        Style::new().fg(theme::DIM),
+                    )),
                 ],
                 theme::WARN,
             ),
