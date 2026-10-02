@@ -1,0 +1,99 @@
+# doorkey on Kubernetes. Bring your own Postgres (DATABASE_URL) and a route
+# that terminates TLS for your hostname.
+#
+#   kubectl create namespace doorkey
+#   kubectl create secret generic doorkey-secrets -n doorkey --from-env-file=doorkey.env
+#   kubectl apply -f doorkey.yaml
+#
+# doorkey.env holds the secret settings from deploy/compose/.env.example:
+# DATABASE_URL, DOORKEY_PEPPER, DOORKEY_SESSION_SECRET, HA_TOKEN, the tag keys
+# and MQTT credentials. Non-secret settings are plain env below.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: doorkey
+  namespace: doorkey
+spec:
+  # One replica, replaced rather than rolled: WebAuthn challenges and spent
+  # action sessions live in memory, and two pods would split them.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: doorkey
+  template:
+    metadata:
+      labels:
+        app: doorkey
+    spec:
+      containers:
+        - name: doorkey
+          # Pin a sha tag rather than :latest — "which build is guarding the
+          # front door" should have an answer.
+          image: ghcr.io/okroj-it/doorkey:latest
+          ports:
+            - containerPort: 8080
+          env:
+            - name: DOORKEY_ORIGIN
+              value: "https://door.example.com"
+            - name: DOORKEY_TAP_MODE
+              value: "sun"
+            - name: HA_URL
+              value: "http://homeassistant.home-assistant.svc:8123"
+            - name: HA_LOCK_ENTITY
+              value: "lock.front_door"
+            - name: TZ
+              value: "Europe/Berlin"
+          envFrom:
+            - secretRef:
+                name: doorkey-secrets
+          livenessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 512Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: doorkey
+  namespace: doorkey
+spec:
+  selector:
+    app: doorkey
+  ports:
+    - port: 8080
+      targetPort: 8080
+---
+# Gateway API shown; an Ingress works the same. Do NOT put SSO/forward-auth in
+# front of it: a guest at the door has no account, and the code they type (or
+# the passkey) is the credential.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: doorkey
+  namespace: doorkey
+spec:
+  parentRefs:
+    - name: my-gateway          # your Gateway
+      namespace: gateway-system
+  hostnames:
+    - door.example.com
+  rules:
+    - backendRefs:
+        - name: doorkey
+          port: 8080

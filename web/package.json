@@ -1,0 +1,17 @@
+{
+  "name": "doorkey-web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vite build && vite build --config vite.admin.config.js && vite build --config vite.action.config.js"
+  },
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "^5.0.0",
+    "svelte": "^5.0.0",
+    "vite": "^6.0.0",
+    "vite-plugin-singlefile": "^2.0.0"
+  },
+  "dependencies": {
+    "@simplewebauthn/browser": "^14.0.0"
+  }
+}

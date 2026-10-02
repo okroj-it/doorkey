@@ -1,0 +1,56 @@
+# doorkey with its own Postgres. Works with `docker compose` and `podman compose`.
+#
+#   cp .env.example .env    # fill it in
+#   docker compose up -d
+#
+# Already have Postgres? Delete the `db` service and `depends_on`, and set
+# DATABASE_URL in .env to your server instead.
+#
+# doorkey speaks plain HTTP on 8080. Put TLS in front of it: a reverse proxy
+# (Caddy, Traefik, nginx) or a Cloudflare Tunnel. Passkeys need https.
+
+services:
+  doorkey:
+    image: ${DOORKEY_IMAGE:-ghcr.io/okroj-it/doorkey:latest}
+    container_name: doorkey
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgres://doorkey:${POSTGRES_PASSWORD}@db:5432/doorkey}
+    extra_hosts:
+      # Lets HA_URL=http://host.docker.internal:8123 reach Home Assistant on
+      # the same machine. (Podman also has host.containers.internal built in.)
+      - "host.docker.internal:host-gateway"
+    ports:
+      # Only the reverse proxy should reach this. Bind to localhost when the
+      # proxy runs on the same host, or drop the mapping for a tunnel on the
+      # same compose network.
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  db:
+    image: postgres:18-alpine
+    container_name: doorkey-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: doorkey
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: doorkey
+    volumes:
+      # Postgres 18 images keep data under /var/lib/postgresql/<major>/.
+      - db:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U doorkey -d doorkey"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  db:

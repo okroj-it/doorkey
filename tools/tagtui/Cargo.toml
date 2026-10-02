@@ -1,0 +1,16 @@
+[package]
+name = "tagtui"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+aes = "0.9.3"
+aes-gcm = "0.11.1"
+anyhow = "1.0.104"
+cbc = { version = "0.2.1", features = ["alloc"] }
+cmac = "0.8.0"
+crossterm = "0.29.0"
+hex = "0.4.3"
+nfc1 = { version = "0.7.1", default-features = false }
+postgres = "0.19.14"
+ratatui = "0.30.2"
