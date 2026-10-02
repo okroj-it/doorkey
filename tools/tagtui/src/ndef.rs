@@ -489,6 +489,31 @@ const URI_PREFIXES: [&str; 36] = [
     "urn:nfc:",
 ];
 
+/// A one-record NDEF message holding `url`, abbreviated with the longest
+/// matching prefix code.
+pub fn uri_record(url: &str) -> Vec<u8> {
+    let (code, rest) = URI_PREFIXES
+        .iter()
+        .enumerate()
+        .skip(1)
+        .filter(|(_, p)| url.starts_with(*p))
+        .max_by_key(|(_, p)| p.len())
+        .map_or((0, url), |(i, p)| (i as u8, &url[p.len()..]));
+    let mut payload = vec![code];
+    payload.extend_from_slice(rest.as_bytes());
+    let mut rec = if payload.len() <= 255 {
+        // MB | ME | SR, well-known
+        vec![0xD1, 0x01, payload.len() as u8]
+    } else {
+        let mut long = vec![0xC1, 0x01];
+        long.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+        long
+    };
+    rec.push(b'U');
+    rec.extend_from_slice(&payload);
+    rec
+}
+
 pub fn uri_prefix(code: u8) -> &'static str {
     URI_PREFIXES.get(code as usize).copied().unwrap_or("")
 }
@@ -711,6 +736,30 @@ mod tests {
             text(&[0x82, b'e', b'n', 0xFF, 0xFE, 0x1F, 0x01]),
             "text [en]  \u{11F}"
         );
+    }
+
+    fn round_trip(url: &str) -> String {
+        describe(&records(&uri_record(url)).unwrap()[0])
+    }
+
+    #[test]
+    fn encodes_uri_records() {
+        let msg = uri_record("https://door.example.com/a/x?t=abc");
+        assert_eq!(&msg[..5], &[0xD1, 0x01, 27, b'U', 0x04]);
+        assert_eq!(round_trip("https://door.example.com/a/x?t=abc"), "URL  https://door.example.com/a/x?t=abc");
+        // The longest prefix wins: https://www. (0x02), not https:// (0x04)
+        assert_eq!(uri_record("https://www.example.com")[4], 0x02);
+        // No known prefix: code 0, the URI kept whole
+        assert_eq!(uri_record("geo:52.2,21.0")[4], 0x00);
+        assert_eq!(round_trip("geo:52.2,21.0"), "URL  geo:52.2,21.0");
+    }
+
+    #[test]
+    fn long_uri_records() {
+        let url = format!("https://example.com/{}", "x".repeat(300));
+        let msg = uri_record(&url);
+        assert_eq!(&msg[..2], &[0xC1, 0x01], "no SR flag past 255 bytes");
+        assert_eq!(round_trip(&url), format!("URL  {url}"));
     }
 
     #[test]
