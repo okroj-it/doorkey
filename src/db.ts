@@ -50,13 +50,59 @@ export interface ScheduleWindow {
   to: string;
 }
 
-const MIGRATIONS = ["001_init.sql", "002_admin.sql", "003_tags.sql", "004_actions.sql"];
+/** Postgres: idempotent DDL, re-run in full on every start. */
+const PG_MIGRATIONS = ["001_init.sql", "002_admin.sql", "003_tags.sql", "004_actions.sql"];
+/** SQLite: one file per schema version, each applied once (user_version). */
+const SQLITE_MIGRATIONS = ["001_schema.sql"];
 
 export async function migrate(): Promise<void> {
-  for (const name of MIGRATIONS) {
+  if (dialect === "sqlite") return migrateSqlite();
+  for (const name of PG_MIGRATIONS) {
     const ddl = await Bun.file(new URL(`../db/${name}`, import.meta.url)).text();
     await sql.unsafe(ddl);
   }
+}
+
+/**
+ * A schema file as single statements: Bun's SQLite adapter runs only the
+ * first statement of a multi-statement string. The schema files keep
+ * semicolons out of comments and literals, so a plain split is enough.
+ */
+function statements(ddl: string): string[] {
+  return ddl
+    .replace(/--[^\n]*/g, "")
+    .split(";")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+async function migrateSqlite(): Promise<void> {
+  // Before anything else. Foreign keys are off by default in SQLite, and the
+  // RESTRICT that keeps a deleted action's tag from opening the door depends
+  // on them; WAL and a busy timeout let the CLI write while the server runs.
+  // Bun keeps one connection per SQLite database, so once is enough.
+  await sql.unsafe("PRAGMA foreign_keys = ON");
+  await sql.unsafe("PRAGMA journal_mode = WAL");
+  await sql.unsafe("PRAGMA busy_timeout = 5000");
+
+  const [{ user_version }] = await sql.unsafe("PRAGMA user_version");
+  for (let v = user_version as number; v < SQLITE_MIGRATIONS.length; v++) {
+    const ddl = await Bun.file(new URL(`../db/sqlite/${SQLITE_MIGRATIONS[v]}`, import.meta.url)).text();
+    await sql.begin(async (tx) => {
+      for (const statement of statements(ddl)) await tx.unsafe(statement);
+      await tx.unsafe(`PRAGMA user_version = ${v + 1}`);
+    });
+  }
+}
+
+/**
+ * Fold SQLite's write-ahead log into the database file, so a file-level
+ * backup taken right after holds everything. Postgres: nothing to do.
+ */
+export async function checkpoint(): Promise<boolean> {
+  if (dialect !== "sqlite") return false;
+  await sql.unsafe("PRAGMA wal_checkpoint(TRUNCATE)");
+  return true;
 }
 
 export async function findByHash(hash: Buffer): Promise<CodeRow | null> {
@@ -96,7 +142,7 @@ export async function recordGrant(codeId: number): Promise<void> {
   await q`
     UPDATE codes
        SET use_count     = use_count + 1,
-           last_used_at  = now(),
+           last_used_at  = ${new Date()},
            failed_streak = 0,
            locked_until  = NULL
      WHERE id = ${codeId}`;
@@ -180,7 +226,7 @@ export async function saveCredential(
 
 export async function touchCredential(id: number, counter: number): Promise<void> {
   await q`
-    UPDATE admin_credentials SET counter = ${counter}, last_used_at = now()
+    UPDATE admin_credentials SET counter = ${counter}, last_used_at = ${new Date()}
      WHERE id = ${id}`;
 }
 
@@ -213,7 +259,7 @@ export async function findEnrollment(token: string): Promise<Enrollment | null> 
 }
 
 export async function consumeEnrollment(token: string): Promise<void> {
-  await q`UPDATE admin_enrollments SET used_at = now() WHERE token = ${token}`;
+  await q`UPDATE admin_enrollments SET used_at = ${new Date()} WHERE token = ${token}`;
 }
 
 export async function logAdminEvent(
@@ -319,18 +365,19 @@ export async function findTagByUid(uid: Uint8Array): Promise<TagRow | null> {
  */
 export async function advanceTagCounter(id: number, counter: number): Promise<boolean> {
   const rows = await q`
-    update tags set last_counter = ${counter}, last_used_at = now()
+    update tags set last_counter = ${counter}, last_used_at = ${new Date()}
      where id = ${id} and last_counter < ${counter}
      returning id`;
   return rows.length > 0;
 }
 
 export async function listTags() {
-  return await q`
-    select t.id, encode(t.uid, 'hex') as uid, t.label, t.active, t.last_counter,
+  const rows = await q`
+    select t.id, t.uid, t.label, t.active, t.last_counter,
            t.action_id, a.slug as action, t.created_at, t.last_used_at
       from tags t left join actions a on a.id = t.action_id
      order by t.created_at`;
+  return rows.map((r: { uid: Buffer }) => ({ ...r, uid: r.uid.toString("hex") }));
 }
 
 export async function insertTag(
@@ -402,7 +449,7 @@ export async function setActionActive(id: number, active: boolean): Promise<void
 }
 
 export async function markActionRun(id: number): Promise<void> {
-  await q`update actions set last_run_at = now() where id = ${id}`;
+  await q`update actions set last_run_at = ${new Date()} where id = ${id}`;
 }
 
 /** Fails (foreign key) while a tag is still linked to it - unlink it first. */
@@ -413,23 +460,38 @@ export async function deleteAction(id: number): Promise<void> {
 export async function linkTagToAction(uidHex: string, actionId: number | null): Promise<boolean> {
   const rows = await q`
     update tags set action_id = ${actionId}
-     where uid = decode(${uidHex}, 'hex')
+     where uid = ${Buffer.from(uidHex, "hex")}
      returning id`;
   return rows.length > 0;
 }
 
+/** Group (owner id, name) pairs into sorted name lists per owner. */
+function namesBy(pairs: { owner: number; name: string }[]): Map<number, string[]> {
+  const out = new Map<number, string[]>();
+  for (const { owner, name } of pairs) out.set(owner, [...(out.get(owner) ?? []), name]);
+  for (const names of out.values()) names.sort();
+  return out;
+}
+
 export async function listActions() {
-  return q<Record<string, unknown>[]>`
-    select a.id, a.slug, a.label, a.script_entity, a.require_sun, a.home_only,
-           a.token_hash is not null as has_token, a.active, a.last_run_at,
-           coalesce(array_agg(distinct r.name) filter (where r.name is not null), '{}') as roles,
-           coalesce(array_agg(distinct t.label) filter (where t.label is not null), '{}') as tags
-      from actions a
-      left join action_roles ar on ar.action_id = a.id
-      left join roles r on r.id = ar.role_id
-      left join tags t on t.action_id = a.id
-     group by a.id
-     order by a.slug`;
+  const [actions, roles, tags] = await Promise.all([
+    q<Record<string, unknown>[]>`
+      select id, slug, label, script_entity, require_sun, home_only,
+             token_hash is not null as has_token, active, last_run_at
+        from actions order by slug`,
+    q<{ owner: number; name: string }[]>`
+      select ar.action_id as owner, r.name
+        from action_roles ar join roles r on r.id = ar.role_id`,
+    q<{ owner: number; name: string }[]>`
+      select action_id as owner, label as name from tags where action_id is not null`,
+  ]);
+  const rolesOf = namesBy(roles);
+  const tagsOf = namesBy(tags);
+  return actions.map((a): Record<string, unknown> => ({
+    ...a,
+    roles: rolesOf.get(a.id as number) ?? [],
+    tags: tagsOf.get(a.id as number) ?? [],
+  }));
 }
 
 // --- action users, roles and passkeys ---------------------------------------
@@ -463,16 +525,18 @@ export async function setActionUserActive(id: number, active: boolean): Promise<
 }
 
 export async function listActionUsers() {
-  return q<Record<string, unknown>[]>`
-    select u.id, u.name, u.active,
-           coalesce(array_agg(distinct r.name) filter (where r.name is not null), '{}') as roles,
-           (select count(*) from action_credentials c where c.user_id = u.id) as passkeys,
-           (select max(c.last_used_at) from action_credentials c where c.user_id = u.id) as last_used_at
-      from action_users u
-      left join user_roles ur on ur.user_id = u.id
-      left join roles r on r.id = ur.role_id
-     group by u.id
-     order by u.name`;
+  const [users, roles] = await Promise.all([
+    q<Record<string, unknown>[]>`
+      select u.id, u.name, u.active,
+             (select count(*) from action_credentials c where c.user_id = u.id) as passkeys,
+             (select max(c.last_used_at) from action_credentials c where c.user_id = u.id) as last_used_at
+        from action_users u order by u.name`,
+    q<{ owner: number; name: string }[]>`
+      select ur.user_id as owner, r.name
+        from user_roles ur join roles r on r.id = ur.role_id`,
+  ]);
+  const rolesOf = namesBy(roles);
+  return users.map((u): Record<string, unknown> => ({ ...u, roles: rolesOf.get(u.id as number) ?? [] }));
 }
 
 export async function ensureRole(name: string): Promise<number> {
@@ -574,7 +638,7 @@ export async function saveActionCredential(
 
 export async function touchActionCredential(id: number, counter: number): Promise<void> {
   await q`
-    update action_credentials set counter = ${counter}, last_used_at = now()
+    update action_credentials set counter = ${counter}, last_used_at = ${new Date()}
      where id = ${id}`;
 }
 
@@ -612,7 +676,7 @@ export async function findActionEnrollment(token: string): Promise<ActionEnrollm
 /** Single use, enforced in SQL: of two racing verifies only one consumes it. */
 export async function consumeActionEnrollment(token: string): Promise<boolean> {
   const rows = await q`
-    update action_enrollments set used_at = now()
+    update action_enrollments set used_at = ${new Date()}
      where token = ${token} and used_at is null
      returning token`;
   return rows.length > 0;
@@ -679,10 +743,10 @@ export async function listRoles() {
 /** Only an unused role can be deleted; returns false if it is still in use. */
 export async function deleteUnusedRole(name: string): Promise<boolean> {
   const rows = await q`
-    delete from roles r
-     where r.name = ${name}
-       and not exists (select 1 from user_roles where role_id = r.id)
-       and not exists (select 1 from action_roles where role_id = r.id)
+    delete from roles
+     where name = ${name}
+       and not exists (select 1 from user_roles where role_id = roles.id)
+       and not exists (select 1 from action_roles where role_id = roles.id)
      returning id`;
   return rows.length > 0;
 }
