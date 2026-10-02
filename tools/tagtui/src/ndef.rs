@@ -77,10 +77,7 @@ pub fn describe(r: &Record) -> String {
         (0x01, b"U") if !p.is_empty() => {
             format!("URL  {}{}", uri_prefix(p[0]), String::from_utf8_lossy(&p[1..]))
         }
-        (0x01, b"T") if !p.is_empty() => {
-            let lang = (p[0] & 0x3F) as usize;
-            format!("text  {}", String::from_utf8_lossy(p.get(1 + lang..).unwrap_or(&[])))
-        }
+        (0x01, b"T") if !p.is_empty() => text(p),
         _ => format!(
             "record TNF {}, type {:?}, {} bytes",
             r.tnf,
@@ -88,6 +85,40 @@ pub fn describe(r: &Record) -> String {
             p.len()
         ),
     }
+}
+
+/// Text RTD: status byte (bit 7 UTF-16, bits 0-5 language code length),
+/// the IANA language code, then the text.
+fn text(p: &[u8]) -> String {
+    let lang_len = (p[0] & 0x3F) as usize;
+    let lang = String::from_utf8_lossy(p.get(1..1 + lang_len).unwrap_or(&[])).into_owned();
+    let body = p.get(1 + lang_len..).unwrap_or(&[]);
+    let text = if p[0] & 0x80 != 0 {
+        utf16(body)
+    } else {
+        String::from_utf8_lossy(body).into_owned()
+    };
+    if lang.is_empty() {
+        format!("text  {text}")
+    } else {
+        format!("text [{lang}]  {text}")
+    }
+}
+
+/// UTF-16, big-endian unless a byte order mark says otherwise.
+fn utf16(b: &[u8]) -> String {
+    let (little, b) = match b {
+        [0xFF, 0xFE, rest @ ..] => (true, rest),
+        [0xFE, 0xFF, rest @ ..] => (false, rest),
+        _ => (false, b),
+    };
+    let units: Vec<u16> = b
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|&pair| if little { u16::from_le_bytes(pair) } else { u16::from_be_bytes(pair) })
+        .collect();
+    String::from_utf16_lossy(&units)
 }
 
 /// NFC Forum URI record prefix codes (URI RTD, table 3). Codes past the
@@ -172,12 +203,22 @@ mod tests {
             0x51, 0x01, 0x04, b'T', 0x02, b'e', b'n', b'h',
         ];
         let lines: Vec<String> = records(&msg).unwrap().iter().map(describe).collect();
-        assert_eq!(lines, ["URL  https://a.b", "text  h"]);
+        assert_eq!(lines, ["URL  https://a.b", "text [en]  h"]);
     }
 
     #[test]
     fn chunked_records_are_refused() {
         assert_eq!(records(&[0xB1, 0x01, 0x01, b'U', 0x04]), Err("chunked records are not supported"));
+    }
+
+    #[test]
+    fn text_encodings() {
+        // UTF-8 with a language code: "koń" (ń = C5 84)
+        assert_eq!(text(&[0x02, b'p', b'l', b'k', b'o', 0xC5, 0x84]), "text [pl]  ko\u{144}");
+        // UTF-16 big-endian, no language code
+        assert_eq!(text(&[0x80, 0x00, b'h', 0x00, b'i']), "text  hi");
+        // UTF-16 with a little-endian byte order mark
+        assert_eq!(text(&[0x82, b'e', b'n', 0xFF, 0xFE, 0x1F, 0x01]), "text [en]  \u{11F}");
     }
 
     #[test]

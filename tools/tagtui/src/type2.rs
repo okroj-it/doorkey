@@ -281,7 +281,7 @@ mod tests {
         let text = [
             0x03, 0x08, 0xD1, 0x01, 0x04, b'T', 0x02, b'e', b'n', b'h', 0xFE,
         ];
-        assert_eq!(content(&text), Content::Records(vec!["text  h".into()]));
+        assert_eq!(content(&text), Content::Records(vec!["text [en]  h".into()]));
         let mime = [0x03, 0x06, 0xD2, 0x01, 0x02, b'x', 0xAA, 0xBB, 0xFE];
         assert_eq!(
             content(&mime),
