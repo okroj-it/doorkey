@@ -1,6 +1,8 @@
-import { Hono } from "hono";
+import { Hono, type Context, type Next } from "hono";
+import type { Server } from "bun";
 import { actions, openFromDoorTag } from "./actions/routes.ts";
 import { admin } from "./admin/routes.ts";
+import { isAppMode } from "./app-mode.ts";
 import { config } from "./config.ts";
 import { verifyTap } from "./auth/index.ts";
 import { verifySunTag } from "./auth/ntag424.ts";
@@ -9,19 +11,32 @@ import * as mqttClient from "./mqtt.ts";
 import * as session from "./session.ts";
 import { attemptUnlock, publishState } from "./unlock.ts";
 
-const app = new Hono();
-
 const KEYPAD = new URL("../web/dist/index.html", import.meta.url);
 
-/** Nothing else exists. No index, no directory listing, no hints. */
-app.notFound((c) => c.text("Not found", 404));
+/**
+ * As a Home Assistant app the admin surface lives on its own listener that
+ * only the Supervisor's Ingress gateway can reach; the public listener has
+ * no /admin at all.
+ */
+const APP_MODE = isAppMode();
 
-app.onError((err, c) => {
-  console.error("unhandled:", err);
-  return c.json({ ok: false }, 500);
-});
+/**
+ * What every listener has. Nothing else exists: no index, no hints. A guard
+ * runs before every route, /healthz included.
+ */
+function base(guard?: (c: Context, next: Next) => Promise<Response | void>): Hono {
+  const h = new Hono();
+  if (guard) h.use("*", guard);
+  h.notFound((c) => c.text("Not found", 404));
+  h.onError((err, c) => {
+    console.error("unhandled:", err);
+    return c.json({ ok: false }, 500);
+  });
+  h.get("/healthz", (c) => c.text("ok"));
+  return h;
+}
 
-app.get("/healthz", (c) => c.text("ok"));
+const app = base();
 
 /**
  * When DOORKEY_ADMIN_HOST is set, the admin surface exists only for requests
@@ -29,14 +44,17 @@ app.get("/healthz", (c) => c.text("ok"));
  * stops being publicly reachable — provided the public edge only forwards
  * your own hostnames, so a forged Host header never reaches the service.
  */
-if (config.admin.host) {
-  app.use("/admin/*", async (c, next) => {
-    const host = (c.req.header("Host") ?? "").split(":")[0];
-    if (host !== config.admin.host) return c.notFound();
-    return next();
-  });
+function mountAdmin(h: Hono): void {
+  if (config.admin.host) {
+    h.use("/admin/*", async (c, next) => {
+      const host = (c.req.header("Host") ?? "").split(":")[0];
+      if (host !== config.admin.host) return c.notFound();
+      return next();
+    });
+  }
+  h.route("/admin", admin);
 }
-app.route("/admin", admin);
+if (!APP_MODE) mountAdmin(app);
 
 /** Tap-gated Home Assistant actions; see src/actions/routes.ts. */
 app.route("/a", actions);
@@ -114,6 +132,24 @@ mqttClient.setReconnectHook(() => void publishState());
 mqttClient.start();
 await publishState();
 
+if (APP_MODE) startIngress();
 console.log(`doorkey listening on :${config.port} (tap mode: ${config.tap.mode})`);
+
+/**
+ * The admin listener for HA's Ingress. The Supervisor's gateway is the only
+ * peer allowed: anything else on this port is refused before routing.
+ */
+function startIngress(): void {
+  const peer = process.env.DOORKEY_INGRESS_PEER ?? "172.30.32.2";
+  const port = Number(process.env.DOORKEY_INGRESS_PORT ?? 8099);
+  const ingress = base(async (c: Context, next: Next) => {
+    const from = (c.env as Server<unknown>).requestIP(c.req.raw)?.address ?? "";
+    if (from !== peer && from !== `::ffff:${peer}`) return c.text("Forbidden", 403);
+    return next();
+  });
+  mountAdmin(ingress);
+  Bun.serve({ port, fetch: ingress.fetch });
+  console.log(`doorkey admin on :${port} for Home Assistant Ingress (from ${peer} only)`);
+}
 
 export default { port: config.port, fetch: app.fetch };
