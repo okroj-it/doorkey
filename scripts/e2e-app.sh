@@ -76,7 +76,9 @@ start fake-ingress bun test/fake-ingress.ts
 doorkey_app "FAKE_WS_REFUSE=0" "DOORKEY_ADMIN_USERS="
 run "app mode" env DOORKEY_DATA_DIR="$DATA" bun test/app-mode-e2e.ts lookup
 
-doorkey_app "FAKE_WS_REFUSE=1" "DOORKEY_ADMIN_USERS=alice"
+# The fallback, set the way a user would: the app's admin_users option.
+jq '. + {admin_users: ["alice"]}' "$DATA/options.json" >"$DATA/options.new" && mv "$DATA/options.new" "$DATA/options.json"
+doorkey_app "FAKE_WS_REFUSE=1" "DOORKEY_ADMIN_USERS="
 run "app mode, users not readable" bun test/app-mode-e2e.ts fallback
 
 # The CLI as the backup hook runs it (docker exec): settings from /data too.
