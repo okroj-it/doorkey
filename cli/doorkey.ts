@@ -5,8 +5,6 @@
  * podman exec, kubectl exec). Minting admin passkey links is CLI-only, so
  * shell access to the container is the root of trust for /admin.
  */
-// First: as a Home Assistant app, the settings come from /data (app-env.ts).
-import "../src/app-env.ts";
 import { randomBytes } from "node:crypto";
 import { config } from "../src/config.ts";
 import { generateCode, hashCode } from "../src/codes.ts";

@@ -1,7 +1,5 @@
 /**
- * Entry point. The server is loaded only after app-env.ts has put a Home
- * Assistant app's settings in place.
+ * Entry point. As a Home Assistant app, config.ts first fills in the
+ * environment from the Supervisor and /data (app-env.ts).
  */
-import "./app-env.ts";
-
-export default (await import("./server.ts")).default;
+export { default } from "./server.ts";

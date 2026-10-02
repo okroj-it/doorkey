@@ -1,4 +1,6 @@
 /** Environment configuration. Every secret arrives here and nowhere else. */
+// First: as a Home Assistant app, the environment is filled in from /data.
+import "./app-env.ts";
 import { parseCidrs } from "./actions/policy.ts";
 
 function req(name: string): string {
