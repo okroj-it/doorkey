@@ -25,7 +25,8 @@ The first tagged release, 0.1.0.
 - Home Assistant app mode: settings from the app options, Home Assistant and
   MQTT through the Supervisor, admin in the sidebar via Ingress for Home
   Assistant administrators.
-- Multi-arch release images (amd64, arm64) with build provenance.
+- Multi-arch release images (amd64, arm64) with build provenance:
+  `doorkey` (standalone) and `doorkey-app` (the Home Assistant app).
 - `tagtui`: reads and decodes NFC Type 2 tags and NDEF records, provisions
   DNA tags, writes password-protected URLs.
 
