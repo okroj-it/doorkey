@@ -746,7 +746,10 @@ mod tests {
     fn encodes_uri_records() {
         let msg = uri_record("https://door.example.com/a/x?t=abc");
         assert_eq!(&msg[..5], &[0xD1, 0x01, 27, b'U', 0x04]);
-        assert_eq!(round_trip("https://door.example.com/a/x?t=abc"), "URL  https://door.example.com/a/x?t=abc");
+        assert_eq!(
+            round_trip("https://door.example.com/a/x?t=abc"),
+            "URL  https://door.example.com/a/x?t=abc"
+        );
         // The longest prefix wins: https://www. (0x02), not https:// (0x04)
         assert_eq!(uri_record("https://www.example.com")[4], 0x02);
         // No known prefix: code 0, the URI kept whole

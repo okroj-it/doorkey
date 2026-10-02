@@ -180,7 +180,10 @@ pub fn user_area_for(current: &[u8], capacity: usize, msg: &[u8]) -> Result<Vec<
     out.extend_from_slice(msg);
     out.push(0xFE);
     if out.len() > capacity {
-        return Err(format!("needs {} bytes, the tag holds {capacity}", out.len()));
+        return Err(format!(
+            "needs {} bytes, the tag holds {capacity}",
+            out.len()
+        ));
     }
     out.resize(out.len().div_ceil(4) * 4, 0x00);
     Ok(out)
@@ -206,7 +209,12 @@ pub fn config_pages(capacity: usize) -> Option<ConfigPages> {
         872 => 0xE3, // NTAG216
         _ => return None,
     };
-    Some(ConfigPages { cfg0, cfg1: cfg0 + 1, pwd: cfg0 + 2, pack: cfg0 + 3 })
+    Some(ConfigPages {
+        cfg0,
+        cfg1: cfg0 + 1,
+        pwd: cfg0 + 2,
+        pack: cfg0 + 3,
+    })
 }
 
 /// Protection starts at page 4: the NDEF message and everything after it
@@ -390,7 +398,11 @@ mod tests {
     fn write_plan_keeps_the_lock_control_tlv() {
         let msg = crate::ndef::uri_record("https://door.example.com/a/x?t=abc");
         let area = user_area_for(&BLANK[16..], 144, &msg).unwrap();
-        assert_eq!(&area[..5], &[0x01, 0x03, 0xA0, 0x0C, 0x34], "lock control kept");
+        assert_eq!(
+            &area[..5],
+            &[0x01, 0x03, 0xA0, 0x0C, 0x34],
+            "lock control kept"
+        );
         assert_eq!(&area[5..7], &[0x03, msg.len() as u8]);
         assert_eq!(area.len() % 4, 0, "whole pages");
         assert_eq!(
@@ -402,7 +414,10 @@ mod tests {
     #[test]
     fn write_plan_limits() {
         let long = crate::ndef::uri_record(&format!("https://example.com/{}", "x".repeat(300)));
-        assert_eq!(user_area_for(&[], 144, &long), Err(format!("needs {} bytes, the tag holds 144", long.len() + 5)));
+        assert_eq!(
+            user_area_for(&[], 144, &long),
+            Err(format!("needs {} bytes, the tag holds 144", long.len() + 5))
+        );
         // 255 bytes and up use the three-byte TLV length
         let area = user_area_for(&[], 496, &long).unwrap();
         let [hi, lo] = (long.len() as u16).to_be_bytes();
@@ -413,7 +428,10 @@ mod tests {
     #[test]
     fn config_layout() {
         let ntag213 = config_pages(144).unwrap();
-        assert_eq!((ntag213.cfg0, ntag213.cfg1, ntag213.pwd, ntag213.pack), (0x29, 0x2A, 0x2B, 0x2C));
+        assert_eq!(
+            (ntag213.cfg0, ntag213.cfg1, ntag213.pwd, ntag213.pack),
+            (0x29, 0x2A, 0x2B, 0x2C)
+        );
         assert_eq!(config_pages(496).unwrap().cfg0, 0x83);
         assert_eq!(config_pages(872).unwrap().pack, 0xE6);
         assert_eq!(config_pages(100), None);
