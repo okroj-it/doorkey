@@ -143,6 +143,16 @@ impl Reader {
             .ok_or_else(|| anyhow!("READ page {page}: short response ({} bytes)", r.len()))
     }
 
+    /// A Type 2 command as a raw frame (InCommunicateThru). The PN532 still
+    /// adds and checks the CRC. Needed for the NTAG commands the firmware's
+    /// InDataExchange misreads as MIFARE Classic ones.
+    fn t2_raw(&mut self, cmd: &[u8], max_rx: usize) -> Result<Vec<u8>> {
+        self.dev.set_property_bool(Property::EasyFraming, false).ok();
+        let r = self.dev.initiator_transceive_bytes(cmd, max_rx, Timeout::Default);
+        self.dev.set_property_bool(Property::EasyFraming, true).ok();
+        r.map_err(|e| anyhow!("raw {:02X}: {e:?}", cmd.first().copied().unwrap_or(0)))
+    }
+
     /// Type 2 GET_VERSION (0x60). None when the chip does not answer it, as
     /// the original Ultralight does not. The failed command halts the tag,
     /// so it is re-selected before returning.
@@ -151,10 +161,7 @@ impl Reader {
     /// InDataExchange, which takes 0x60 for a MIFARE Classic authentication
     /// and never sends it, so even a genuine NTAG21x looked silent.
     pub fn t2_version(&mut self) -> Option<Vec<u8>> {
-        self.dev.set_property_bool(Property::EasyFraming, false).ok();
-        let r = self.dev.initiator_transceive_bytes(&[0x60], 8, Timeout::Default);
-        self.dev.set_property_bool(Property::EasyFraming, true).ok();
-        match r {
+        match self.t2_raw(&[0x60], 8) {
             Ok(v) if v.len() >= 8 => Some(v),
             _ => {
                 self.select().ok();
