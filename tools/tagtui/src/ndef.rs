@@ -80,6 +80,7 @@ pub fn describe(r: &Record) -> String {
         (0x01, b"T") if !p.is_empty() => text(p),
         (0x00, _) => "empty record".into(),
         (0x02, b"application/vnd.wfa.wsc") => wifi(p),
+        (0x02, b"text/vcard" | b"text/x-vcard") => vcard(&String::from_utf8_lossy(p)),
         (0x02, t) => mime(&String::from_utf8_lossy(t), p),
         (0x03, t) => format!("URI  {}", String::from_utf8_lossy(t)),
         (0x04, b"android.com:pkg") => {
@@ -155,6 +156,44 @@ fn wifi(p: &[u8]) -> String {
         _ => String::new(),
     };
     format!("Wi-Fi  \"{ssid}\"  {auth}/{enc}  {key}{mac}")
+}
+
+/// A contact card: name, phone numbers, emails, organisation and URL.
+fn vcard(card: &str) -> String {
+    // Unfold: a line starting with a space or tab continues the previous one.
+    let mut lines: Vec<String> = Vec::new();
+    for raw in card.lines() {
+        match (raw.strip_prefix([' ', '\t']), lines.last_mut()) {
+            (Some(rest), Some(prev)) => prev.push_str(rest),
+            _ => lines.push(raw.to_string()),
+        }
+    }
+    let mut fields: Vec<(String, String)> = Vec::new();
+    for line in &lines {
+        let Some((key, value)) = line.split_once(':') else { continue };
+        // "TEL;TYPE=CELL" -> "TEL"; "item1.EMAIL" -> "EMAIL"
+        let name = key.split(';').next().unwrap_or("");
+        let name = name.rsplit('.').next().unwrap_or("").to_ascii_uppercase();
+        fields.push((name, value.trim().to_string()));
+    }
+    let all = |k: &str| fields.iter().filter(|(n, _)| n == k).map(|(_, v)| v.as_str()).collect::<Vec<_>>();
+    let name = all("FN")
+        .first()
+        .map(|s| s.to_string())
+        .or_else(|| {
+            // N is "family;given;additional;prefix;suffix"
+            all("N").first().map(|n| {
+                let parts: Vec<&str> = n.split(';').collect();
+                let (family, given) = (parts.first().copied().unwrap_or(""), parts.get(1).copied().unwrap_or(""));
+                format!("{given} {family}").trim().to_string()
+            })
+        })
+        .unwrap_or_else(|| "?".into());
+    let mut out = vec![format!("contact  {name}")];
+    for k in ["TEL", "EMAIL", "ORG", "URL"] {
+        out.extend(all(k).iter().filter(|v| !v.is_empty()).map(|v| v.replace(';', " ")));
+    }
+    out.join(" · ")
 }
 
 /// MIME-typed record. Text types are shown; anything else is named.
@@ -339,6 +378,20 @@ mod tests {
         open.extend(attr(0x1003, &[0x00, 0x01]));
         open.extend(attr(0x100F, &[0x00, 0x01]));
         assert_eq!(describe(&rec(2, b"application/vnd.wfa.wsc", &open)), "Wi-Fi  \"Cafe\"  open/none  no key");
+    }
+
+    #[test]
+    fn contact_cards() {
+        let card = "BEGIN:VCARD\r\nVERSION:3.0\r\nN:Kowalska;Anna;;;\r\nFN:Anna Kowalska\r\n\
+                    TEL;TYPE=CELL:+48 600 100 200\r\nitem1.EMAIL;TYPE=INTERNET:anna@exam\r\n ple.com\r\n\
+                    ORG:Example;Lab\r\nEND:VCARD\r\n";
+        assert_eq!(
+            describe(&rec(2, b"text/vcard", card.as_bytes())),
+            "contact  Anna Kowalska · +48 600 100 200 · anna@example.com · Example Lab"
+        );
+        // No FN: fall back to the structured name.
+        let bare = "BEGIN:VCARD\nN:Doe;John\nEND:VCARD";
+        assert_eq!(describe(&rec(2, b"text/x-vcard", bare.as_bytes())), "contact  John Doe");
     }
 
     #[test]
