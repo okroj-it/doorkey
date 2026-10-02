@@ -170,6 +170,32 @@ impl Reader {
         }
     }
 
+    /// Type 2 PWD_AUTH (0x1B), as a raw frame. Returns the PACK the tag
+    /// answers with. A wrong password gets no answer and halts the tag, so it
+    /// is re-selected before the error is returned.
+    pub fn t2_auth(&mut self, pwd: [u8; 4]) -> Result<[u8; 2]> {
+        match self.t2_raw(&[0x1B, pwd[0], pwd[1], pwd[2], pwd[3]], 2) {
+            Ok(r) if r.len() >= 2 => Ok([r[0], r[1]]),
+            _ => {
+                self.select().ok();
+                bail!("PWD_AUTH refused")
+            }
+        }
+    }
+
+    /// Type 2 WRITE (0xA2): one page. The tag answers with a 4-bit ACK; a
+    /// NAK (protected page, locked page, bad address) comes back as an error.
+    pub fn t2_write(&mut self, page: u8, data: [u8; 4]) -> Result<()> {
+        let cmd = [0xA2, page, data[0], data[1], data[2], data[3]];
+        self.dev
+            .initiator_transceive_bytes(&cmd, 1, Timeout::Default)
+            .map(|_| ())
+            .map_err(|e| {
+                self.select().ok();
+                anyhow!("WRITE page {page:#04X} refused: {e:?}")
+            })
+    }
+
     /// Everything a Type 2 tag shows without authentication or writes.
     pub fn read_type2(&mut self) -> Result<Type2Dump> {
         let version = self.t2_version();
