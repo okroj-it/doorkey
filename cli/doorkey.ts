@@ -54,22 +54,15 @@ async function add(args: string[]): Promise<void> {
   const digits = Number(flag(args, "digits") ?? 6);
 
   const code = generateCode(digits);
-  const rows = await sql<{ id: number }[]>`
-    INSERT INTO codes (label, code_hash, schedule, valid_from, valid_until, max_uses)
-    VALUES (${label}, ${hashCode(code)}, ${schedule as unknown as string},
-            ${validFrom}, ${validUntil}, ${maxUses})
-    RETURNING id`;
+  const id = await db.insertCode(label, hashCode(code), schedule, validFrom, validUntil, maxUses);
 
-  console.log(`\n  ${label}  (id ${rows[0]?.id})`);
+  console.log(`\n  ${label}  (id ${id})`);
   console.log(`  code: ${code}`);
   console.log(`\n  Shown once. Only the HMAC is stored.\n`);
 }
 
 async function list(): Promise<void> {
-  const rows = await sql<Record<string, unknown>[]>`
-    SELECT id, label, active, use_count, max_uses, valid_until, locked_until,
-           last_used_at, schedule
-      FROM codes ORDER BY id`;
+  const rows = await db.listCodes();
   if (rows.length === 0) return console.log("no codes");
   console.table(
     rows.map((r) => ({
@@ -86,20 +79,17 @@ async function list(): Promise<void> {
 
 async function setActive(id: string | undefined, active: boolean): Promise<void> {
   if (!id) throw new Error("usage: revoke|enable <id>");
-  await sql`UPDATE codes SET active = ${active}, locked_until = NULL WHERE id = ${Number(id)}`;
+  await db.setCodeActive(Number(id), active);
   console.log(`code ${id} ${active ? "enabled" : "revoked"}`);
 }
 
 async function log(args: string[]): Promise<void> {
   const n = Number(flag(args, "tail") ?? 40);
-  const rows = await sql<Record<string, unknown>[]>`
-    SELECT a.ts, a.result, c.label, a.src_ip
-      FROM attempts a LEFT JOIN codes c ON c.id = a.code_id
-     ORDER BY a.ts DESC LIMIT ${n}`;
+  const rows = await db.recentAttempts(n);
   if (rows.length === 0) return console.log("no attempts logged");
   console.table(
     rows.reverse().map((r) => ({
-      ts: new Date(r.ts as string).toISOString().slice(0, 19).replace("T", " "),
+      ts: r.ts.toISOString().slice(0, 19).replace("T", " "),
       result: r.result,
       label: r.label ?? "",
       ip: r.src_ip ?? "",
