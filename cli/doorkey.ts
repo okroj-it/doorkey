@@ -331,6 +331,9 @@ try {
     case "admin:enroll": await adminEnroll(rest); break;
     case "admin:list": await adminList(); break;
     case "admin:revoke": await adminRevoke(rest[0]); break;
+    case "db:checkpoint":
+      console.log((await db.checkpoint()) ? "checkpointed" : "nothing to do (not SQLite)");
+      break;
     default:
       if (cmd && (await actionsCli(cmd, rest))) break;
       console.log(`usage: bun cli/doorkey.ts <command>
@@ -345,6 +348,7 @@ try {
   admin:enroll <label> [--minutes 15]   mint a single-use passkey enrolment link
   admin:list                            enrolled passkeys
   admin:revoke <id>                     remove a passkey
+  db:checkpoint                         SQLite: fold the WAL into the file (before a backup)
 
   tap-gated actions (users and passkeys are separate from admin):
   users                                 action users, roles, passkeys

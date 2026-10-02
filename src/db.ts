@@ -95,6 +95,16 @@ async function migrateSqlite(): Promise<void> {
   }
 }
 
+/**
+ * Fold SQLite's write-ahead log into the database file, so a file-level
+ * backup taken right after holds everything. Postgres: nothing to do.
+ */
+export async function checkpoint(): Promise<boolean> {
+  if (dialect !== "sqlite") return false;
+  await sql.unsafe("PRAGMA wal_checkpoint(TRUNCATE)");
+  return true;
+}
+
 export async function findByHash(hash: Buffer): Promise<CodeRow | null> {
   const rows = await q<CodeRow[]>`
     SELECT id, label, active, valid_from, valid_until, schedule, max_uses,
