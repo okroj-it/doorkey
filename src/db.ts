@@ -50,12 +50,48 @@ export interface ScheduleWindow {
   to: string;
 }
 
-const MIGRATIONS = ["001_init.sql", "002_admin.sql", "003_tags.sql", "004_actions.sql"];
+/** Postgres: idempotent DDL, re-run in full on every start. */
+const PG_MIGRATIONS = ["001_init.sql", "002_admin.sql", "003_tags.sql", "004_actions.sql"];
+/** SQLite: one file per schema version, each applied once (user_version). */
+const SQLITE_MIGRATIONS = ["001_schema.sql"];
 
 export async function migrate(): Promise<void> {
-  for (const name of MIGRATIONS) {
+  if (dialect === "sqlite") return migrateSqlite();
+  for (const name of PG_MIGRATIONS) {
     const ddl = await Bun.file(new URL(`../db/${name}`, import.meta.url)).text();
     await sql.unsafe(ddl);
+  }
+}
+
+/**
+ * A schema file as single statements: Bun's SQLite adapter runs only the
+ * first statement of a multi-statement string. The schema files keep
+ * semicolons out of comments and literals, so a plain split is enough.
+ */
+function statements(ddl: string): string[] {
+  return ddl
+    .replace(/--[^\n]*/g, "")
+    .split(";")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+async function migrateSqlite(): Promise<void> {
+  // Before anything else. Foreign keys are off by default in SQLite, and the
+  // RESTRICT that keeps a deleted action's tag from opening the door depends
+  // on them; WAL and a busy timeout let the CLI write while the server runs.
+  // Bun keeps one connection per SQLite database, so once is enough.
+  await sql.unsafe("PRAGMA foreign_keys = ON");
+  await sql.unsafe("PRAGMA journal_mode = WAL");
+  await sql.unsafe("PRAGMA busy_timeout = 5000");
+
+  const [{ user_version }] = await sql.unsafe("PRAGMA user_version");
+  for (let v = user_version as number; v < SQLITE_MIGRATIONS.length; v++) {
+    const ddl = await Bun.file(new URL(`../db/sqlite/${SQLITE_MIGRATIONS[v]}`, import.meta.url)).text();
+    await sql.begin(async (tx) => {
+      for (const statement of statements(ddl)) await tx.unsafe(statement);
+      await tx.unsafe(`PRAGMA user_version = ${v + 1}`);
+    });
   }
 }
 
