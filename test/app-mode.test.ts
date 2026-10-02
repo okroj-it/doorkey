@@ -39,6 +39,7 @@ describe("app mode", () => {
         tag_kek: "k".repeat(64),
         tag_meta_key: "m".repeat(32),
         home_cidrs: ["203.0.113.7/32", "192.168.1.0/24"],
+        admin_users: ["alice", "owner"],
         timezone: "Europe/Warsaw",
       },
       secrets,
@@ -54,6 +55,7 @@ describe("app mode", () => {
       DOORKEY_TAG_KEK: "k".repeat(64),
       DOORKEY_TAG_META_KEY: "m".repeat(32),
       DOORKEY_HOME_CIDRS: "203.0.113.7/32,192.168.1.0/24",
+      DOORKEY_ADMIN_USERS: "alice,owner",
       DATABASE_URL: "sqlite:///data/doorkey.db",
       DOORKEY_PEPPER: secrets.pepper,
       DOORKEY_SESSION_SECRET: secrets.session_secret,
@@ -70,6 +72,7 @@ describe("app mode", () => {
     );
     expect(env.DOORKEY_TAG_KEK).toBeUndefined();
     expect(env.TZ).toBeUndefined();
+    expect(env.DOORKEY_ADMIN_USERS).toBeUndefined();
     expect(env.DOORKEY_HOME_CIDRS).toBe("");
     expect(env.HA_NOTIFY_SERVICE).toBe("");
   });
