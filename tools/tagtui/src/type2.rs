@@ -6,6 +6,8 @@
 //! static lock bytes; page 3 is the capability container; user memory with
 //! the TLVs (and the NDEF message) starts at page 4.
 
+use crate::ndef;
+
 /// GET_VERSION (0x60), when the chip answers it. Genuine NTAG21x and
 /// Ultralight EV1 do; the original Ultralight and many clones do not.
 #[derive(Debug, Clone, PartialEq)]
@@ -37,7 +39,7 @@ impl Version {
                 return format!(
                     "unknown (type {:02X}, storage {:02X})",
                     self.product_type, self.storage
-                )
+                );
             }
         };
         name.to_string()
@@ -102,20 +104,15 @@ pub fn static_locks(page2: &[u8]) -> [u8; 2] {
 pub enum Content {
     /// An NDEF TLV with a zero-length message: formatted but empty.
     Empty,
-    Uri(String),
-    Text(String),
-    Other {
-        tnf: u8,
-        record_type: Vec<u8>,
-        len: usize,
-    },
+    /// One description per record, in order.
+    Records(Vec<String>),
     /// No NDEF TLV before the terminator / end of memory.
     NoNdef,
     Malformed(&'static str),
 }
 
-/// Walk the TLVs in user memory (from page 4) and decode the first NDEF
-/// record. Lock and memory control TLVs are skipped.
+/// Walk the TLVs in user memory (from page 4) and decode the NDEF message.
+/// Lock and memory control TLVs are skipped.
 pub fn content(user: &[u8]) -> Content {
     let mut i = 0;
     while i < user.len() {
@@ -132,10 +129,12 @@ pub fn content(user: &[u8]) -> Content {
                     return Content::Malformed("TLV runs past the end of memory");
                 }
                 if t == 0x03 {
-                    return if len == 0 {
-                        Content::Empty
-                    } else {
-                        record(&user[start..start + len])
+                    if len == 0 {
+                        return Content::Empty;
+                    }
+                    return match ndef::records(&user[start..start + len]) {
+                        Ok(rs) => Content::Records(rs.iter().map(ndef::describe).collect()),
+                        Err(why) => Content::Malformed(why),
                     };
                 }
                 i = start + len;
@@ -153,82 +152,11 @@ fn tlv_len(b: &[u8]) -> Option<(usize, usize)> {
     }
 }
 
-/// The first record of an NDEF message.
-fn record(msg: &[u8]) -> Content {
-    let Some(&flags) = msg.first() else {
-        return Content::Malformed("empty message");
-    };
-    let tnf = flags & 0x07;
-    let short = flags & 0x10 != 0;
-    let has_id = flags & 0x08 != 0;
-    let Some(type_len) = msg.get(1).map(|&n| n as usize) else {
-        return Content::Malformed("no type length");
-    };
-    let (payload_len, mut p) = if short {
-        let Some(&n) = msg.get(2) else {
-            return Content::Malformed("no payload length");
-        };
-        (n as usize, 3)
-    } else {
-        let Some(n) = msg.get(2..6) else {
-            return Content::Malformed("no payload length");
-        };
-        (u32::from_be_bytes([n[0], n[1], n[2], n[3]]) as usize, 6)
-    };
-    let id_len = if has_id {
-        let Some(&n) = msg.get(p) else {
-            return Content::Malformed("no id length");
-        };
-        p += 1;
-        n as usize
-    } else {
-        0
-    };
-    let Some(record_type) = msg.get(p..p + type_len) else {
-        return Content::Malformed("type truncated");
-    };
-    p += type_len + id_len;
-    let Some(payload) = msg.get(p..p + payload_len) else {
-        return Content::Malformed("payload truncated");
-    };
-
-    match (tnf, record_type) {
-        (0x01, b"U") if !payload.is_empty() => Content::Uri(format!(
-            "{}{}",
-            uri_prefix(payload[0]),
-            String::from_utf8_lossy(&payload[1..])
-        )),
-        (0x01, b"T") if !payload.is_empty() => {
-            let lang = (payload[0] & 0x3F) as usize;
-            Content::Text(
-                String::from_utf8_lossy(payload.get(1 + lang..).unwrap_or(&[])).into_owned(),
-            )
-        }
-        _ => Content::Other {
-            tnf,
-            record_type: record_type.to_vec(),
-            len: payload_len,
-        },
-    }
-}
-
-/// NFC Forum URI record prefix codes (the common ones).
-fn uri_prefix(code: u8) -> &'static str {
-    match code {
-        0x01 => "http://www.",
-        0x02 => "https://www.",
-        0x03 => "http://",
-        0x04 => "https://",
-        0x05 => "tel:",
-        0x06 => "mailto:",
-        _ => "",
-    }
-}
-
 /// Labelled rows for the screen and for --probe.
 pub struct Summary {
     pub identity: Vec<(&'static str, String)>,
-    pub ndef: String,
+    /// One line per record, or one line saying why there are none.
+    pub ndef: Vec<String>,
     /// "page: 4 bytes × 4" rows, up to the last page that is not all zero.
     pub pages: Vec<String>,
 }
@@ -265,21 +193,15 @@ pub fn summarise(uid: &[u8], version: Option<&[u8]>, header: &[u8; 16], user: &[
         ),
     };
     let ndef = match content(user) {
-        Content::Empty => "empty (formatted, no message)".into(),
-        Content::Uri(u) => format!("URL  {u}"),
-        Content::Text(t) => format!("text  {t}"),
-        Content::Other {
-            tnf,
-            record_type,
-            len,
-        } => {
-            format!(
-                "record TNF {tnf}, type {:?}, {len} bytes",
-                String::from_utf8_lossy(&record_type)
-            )
-        }
-        Content::NoNdef => "no NDEF message".into(),
-        Content::Malformed(why) => format!("malformed: {why}"),
+        Content::Empty => vec!["empty (formatted, no message)".into()],
+        Content::Records(lines) if lines.len() == 1 => lines,
+        Content::Records(lines) => lines
+            .iter()
+            .enumerate()
+            .map(|(i, l)| format!("{}. {l}", i + 1))
+            .collect(),
+        Content::NoNdef => vec!["no NDEF message".into()],
+        Content::Malformed(why) => vec![format!("malformed: {why}")],
     };
 
     let mut mem = header.to_vec();
@@ -350,7 +272,7 @@ mod tests {
         user.push(0xFE);
         assert_eq!(
             content(&user),
-            Content::Uri("https://door.example.com/a/x?t=abc".into())
+            Content::Records(vec!["URL  https://door.example.com/a/x?t=abc".into()])
         );
     }
 
@@ -359,16 +281,12 @@ mod tests {
         let text = [
             0x03, 0x08, 0xD1, 0x01, 0x04, b'T', 0x02, b'e', b'n', b'h', 0xFE,
         ];
-        assert_eq!(content(&text), Content::Text("h".into()));
-        let mime = [0x03, 0x06, 0xD2, 0x01, 0x02, b'x', 0xAA, 0xBB, 0xFE];
         assert_eq!(
-            content(&mime),
-            Content::Other {
-                tnf: 2,
-                record_type: b"x".to_vec(),
-                len: 2
-            }
+            content(&text),
+            Content::Records(vec!["text [en]  h".into()])
         );
+        let mime = [0x03, 0x06, 0xD2, 0x01, 0x02, b'x', 0xAA, 0xBB, 0xFE];
+        assert_eq!(content(&mime), Content::Records(vec!["x, 2 bytes".into()]));
     }
 
     #[test]
@@ -396,7 +314,7 @@ mod tests {
         assert_eq!(row("Capacity"), "144 bytes");
         assert_eq!(row("Format"), "NDEF 1.0, read/write");
         assert_eq!(row("Locks"), "none");
-        assert_eq!(s.ndef, "empty (formatted, no message)");
+        assert_eq!(s.ndef, ["empty (formatted, no message)"]);
         // Pages 0-7 hold data; the all-zero rows after them are left out.
         assert_eq!(s.pages.len(), 2);
         assert_eq!(s.pages[1], "  4  0103A00C 340300FE 00000000 00000000");

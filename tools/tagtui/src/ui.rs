@@ -857,14 +857,19 @@ impl App {
         );
 
         if let Some(s) = &self.tag_type2 {
-            let mut lines = vec![
-                Line::from(vec![
-                    Span::styled(format!("{:<12}", "NDEF"), Style::new().fg(theme::DIM)),
-                    Span::styled(s.ndef.clone(), Style::new().fg(theme::TEXT)),
-                ]),
-                Line::from(""),
-                Line::from(Span::styled("page  memory", Style::new().fg(theme::DIM))),
-            ];
+            let mut lines: Vec<Line> = s
+                .ndef
+                .iter()
+                .enumerate()
+                .map(|(i, l)| {
+                    Line::from(vec![
+                        Span::styled(format!("{:<12}", if i == 0 { "NDEF" } else { "" }), Style::new().fg(theme::DIM)),
+                        Span::styled(l.clone(), Style::new().fg(theme::TEXT)),
+                    ])
+                })
+                .collect();
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled("page  memory", Style::new().fg(theme::DIM))));
             lines.extend(
                 s.pages.iter().map(|p| Line::from(Span::styled(p.clone(), Style::new().fg(theme::TEXT)))),
             );

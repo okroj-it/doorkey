@@ -7,6 +7,7 @@
 
 mod db;
 mod ev2;
+mod ndef;
 mod nfc;
 mod type2;
 mod ui;
@@ -65,7 +66,9 @@ fn probe() -> Result<()> {
             for (k, v) in &s.identity {
                 println!("  {k:<9} {v}");
             }
-            println!("  NDEF      {}", s.ndef);
+            for (i, line) in s.ndef.iter().enumerate() {
+                println!("  {:<9} {line}", if i == 0 { "NDEF" } else { "" });
+            }
             println!("  pages:");
             for line in &s.pages {
                 println!("    {line}");
