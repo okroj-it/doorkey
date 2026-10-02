@@ -143,7 +143,7 @@ flowchart TB
 
 **Provisioning** needs a PN532 reader. Two tools, same key scheme:
 
-- **`tools/tagtui`** — Rust TUI. Dry runs by default; reading and tapping never write. Writing the URL and changing keys sit behind explicit confirmation, ordered so a factory-K0 session can repair the tag until the very last step. Enrols the tag (UID, label, wrapped K3) straight into Postgres. It also reads plain NFC Type 2 tags (NTAG21x, Ultralight and compatible clones) — model, capacity, locks and the NDEF URL — without writing; DNA-only actions refuse them.
+- **`tools/tagtui`** — Rust TUI. Dry runs by default; reading and tapping never write. Writing the URL and changing keys sit behind explicit confirmation, ordered so a factory-K0 session can repair the tag until the very last step. Enrols the tag (UID, label, wrapped K3) straight into Postgres. It also reads plain NFC Type 2 tags (NTAG21x, Ultralight and compatible clones) without writing — model, capacity and locks, and every record of the NDEF message decoded: URLs, text, Smart Posters, Wi-Fi networks (key masked), contacts, Bluetooth pairing, Android app records and the handover/signature types. DNA-only actions refuse them.
 - **`tools/provision.py`** — a staged CLI: `--check` (auth only, writes nothing), `--write-url`, then `--keys` (irreversible: locks the tag to your master).
 
 Both take your public origin (`--origin` or `DOORKEY_ORIGIN`, e.g. `https://door.example.com`) and write `<host>/k/sun?picc=…&cmac=…`. That one URL serves every tag.
