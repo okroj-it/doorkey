@@ -8,6 +8,7 @@
 mod db;
 mod ev2;
 mod nfc;
+mod type2;
 mod ui;
 
 use anyhow::Result;
@@ -32,6 +33,13 @@ fn main() -> Result<()> {
         return fix_sdm();
     }
 
+    // libnfc logs to stderr on its own (e.g. when a Type 2 clone ignores
+    // GET_VERSION), which would scribble over the full-screen UI. Errors are
+    // reported in the log panel instead. The headless paths above keep them.
+    if std::env::var("LIBNFC_LOG_LEVEL").is_err() {
+        unsafe { std::env::set_var("LIBNFC_LOG_LEVEL", "0") };
+    }
+
     let terminal = ratatui::init();
     let result = ui::App::new().run(terminal);
     ratatui::restore();
@@ -48,6 +56,24 @@ fn probe() -> Result<()> {
 
     let t = r.select()?;
     println!("  UID {}  SAK {:02X}", hex::encode_upper(&t.uid), t.sak);
+
+    match t.kind() {
+        nfc::TagKind::IsoDep => {}
+        nfc::TagKind::Type2 => {
+            let d = r.read_type2()?;
+            let s = type2::summarise(&t.uid, d.version.as_deref(), &d.header, &d.user);
+            for (k, v) in &s.identity {
+                println!("  {k:<9} {v}");
+            }
+            println!("  NDEF      {}", s.ndef);
+            println!("  pages:");
+            for line in &s.pages {
+                println!("    {line}");
+            }
+            return Ok(());
+        }
+        nfc::TagKind::Other => anyhow::bail!("SAK {:02X}: neither ISO-DEP nor Type 2", t.sak),
+    }
 
     r.select_ndef_app()?;
     println!("  GetVersion UID {}", hex::encode_upper(r.get_version_uid()?));

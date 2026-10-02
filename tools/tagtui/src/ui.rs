@@ -56,6 +56,7 @@ fn key(k: &str, what: &str) -> Vec<Span<'static>> {
 use crate::db::{self, Db};
 use crate::ev2::{self, FACTORY_KEY};
 use crate::nfc::{self, Reader};
+use crate::type2;
 
 const TABS: [&str; 5] = ["Reader", "Tag", "Tap", "Write", "Database"];
 
@@ -96,6 +97,8 @@ pub struct App {
     tag_ident: Vec<Line<'static>>,
     /// file no, sdm on, access rights, size
     tag_files: Vec<(u8, bool, String, u32)>,
+    /// Set instead of tag_files when the last read was a Type 2 tag.
+    tag_type2: Option<type2::Summary>,
     tap_ok: Option<bool>,
     tap_lines: Vec<Line<'static>>,
     write_lines: Vec<Line<'static>>,
@@ -124,6 +127,7 @@ impl App {
             tag_lines: Vec::new(),
             tag_ident: Vec::new(),
             tag_files: Vec::new(),
+            tag_type2: None,
             tap_ok: None,
             tap_lines: Vec::new(),
             write_lines: Vec::new(),
@@ -220,6 +224,31 @@ impl App {
                 Span::styled(v, Style::new().fg(theme::TEXT)),
             ])
         };
+        // Type 2 tags (NTAG21x, Ultralight) have their own read-only path.
+        let type2 = match r.select() {
+            Ok(t) if t.kind() == nfc::TagKind::Type2 => Some(
+                r.read_type2()
+                    .map(|d| type2::summarise(&t.uid, d.version.as_deref(), &d.header, &d.user)),
+            ),
+            _ => None,
+        };
+        if let Some(res) = type2 {
+            match res {
+                Ok(s) => {
+                    self.tag_ident = s.identity.iter().map(|(k, v)| row(k, v.clone())).collect();
+                    self.tag_files.clear();
+                    // Nothing DNA-shaped to enrol or derive keys for.
+                    self.last_uid = None;
+                    self.tag_type2 = Some(s);
+                    self.tag_lines = vec![Line::from("read")];
+                    self.ok("Type 2 tag read — nothing written");
+                }
+                Err(e) => self.err(&format!("read: {e}")),
+            }
+            return;
+        }
+        self.tag_type2 = None;
+
         let res = (|| -> Result<Vec<u8>> {
             let t = r.select()?;
             ident.push(row("UID", hex::encode_upper(&t.uid)));
@@ -265,7 +294,7 @@ impl App {
         let mut out = Vec::new();
         let mut uid_seen: Option<Vec<u8>> = None;
         let res = (|| -> Result<bool> {
-            r.select()?;
+            r.select_dna()?;
             r.select_ndef_app()?;
             let ndef_len = nfc::build_ndef(&nfc::sdm_url_template()?).len() as u32;
             let data = r.read_data(2, 0, ndef_len)?;
@@ -343,7 +372,7 @@ impl App {
             return;
         };
         let res = (|| -> Result<()> {
-            r.select()?;
+            r.select_dna()?;
             r.select_ndef_app()?;
             let uid = r.get_version_uid()?;
             let ndef = nfc::build_ndef(&nfc::sdm_url_template()?);
@@ -389,7 +418,7 @@ impl App {
             let meta = hex::decode(&meta_hex)?;
             let kek = hex::decode(&kek_hex)?;
 
-            r.select()?;
+            r.select_dna()?;
             r.select_ndef_app()?;
             let uid = r.get_version_uid()?;
             let k0 = nfc::derive_key(&master, 0x00, &uid);
@@ -526,7 +555,7 @@ impl App {
             .reader
             .as_mut()
             .ok_or_else(|| anyhow::anyhow!("open a reader first"))?;
-        r.select()?;
+        r.select_dna()?;
         r.select_ndef_app()?;
         let uid = r.get_version_uid()?;
         let k3 = nfc::derive_key(&master, 0x03, &uid);
@@ -728,9 +757,14 @@ impl App {
             Some(r) => spans.extend(chip("reader", r.port.clone(), theme::GOOD)),
             None => spans.extend(chip("reader", "closed".into(), theme::BAD)),
         }
-        match &self.last_uid {
-            Some(u) => spans.extend(chip("tag", hex::encode_upper(u), theme::GOOD)),
-            None => spans.extend(chip("tag", "none read".into(), theme::DIM)),
+        let type2_uid = self.tag_type2.as_ref().and_then(|s| {
+            s.identity.iter().find(|(k, _)| *k == "UID").map(|(_, v)| v.clone())
+        });
+        match (&self.last_uid, type2_uid) {
+            (Some(u), _) => spans.extend(chip("tag", hex::encode_upper(u), theme::GOOD)),
+            // Shown, but not in the DNA colour: nothing to enrol or tap.
+            (None, Some(u)) => spans.extend(chip("tag", format!("{u} (Type 2)"), theme::ACCENT)),
+            (None, None) => spans.extend(chip("tag", "none read".into(), theme::DIM)),
         }
         spans.extend(chip(
             "keys",
@@ -821,6 +855,25 @@ impl App {
                 .wrap(Wrap { trim: false }),
             left,
         );
+
+        if let Some(s) = &self.tag_type2 {
+            let mut lines = vec![
+                Line::from(vec![
+                    Span::styled(format!("{:<12}", "NDEF"), Style::new().fg(theme::DIM)),
+                    Span::styled(s.ndef.clone(), Style::new().fg(theme::TEXT)),
+                ]),
+                Line::from(""),
+                Line::from(Span::styled("page  memory", Style::new().fg(theme::DIM))),
+            ];
+            lines.extend(
+                s.pages.iter().map(|p| Line::from(Span::styled(p.clone(), Style::new().fg(theme::TEXT)))),
+            );
+            f.render_widget(
+                Paragraph::new(lines).block(panel("NDEF & memory")).wrap(Wrap { trim: false }),
+                right,
+            );
+            return;
+        }
 
         let rows: Vec<Row> = self
             .tag_files

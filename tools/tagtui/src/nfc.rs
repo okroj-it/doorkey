@@ -16,6 +16,37 @@ pub struct Tag {
     pub ats: Vec<u8>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TagKind {
+    /// ISO 14443-4 (SAK bit 0x20): APDUs, as the NTAG 424 DNA speaks.
+    IsoDep,
+    /// SAK 0x00: NFC Forum Type 2 (NTAG21x, MIFARE Ultralight, clones).
+    Type2,
+    Other,
+}
+
+impl Tag {
+    pub fn kind(&self) -> TagKind {
+        if self.sak & 0x20 != 0 {
+            TagKind::IsoDep
+        } else if self.sak == 0x00 {
+            TagKind::Type2
+        } else {
+            TagKind::Other
+        }
+    }
+}
+
+/// What the read-only Type 2 commands returned. Decoded by `type2`.
+pub struct Type2Dump {
+    /// GET_VERSION, if the chip answers it.
+    pub version: Option<Vec<u8>>,
+    /// Pages 0-3: UID, check bytes, static locks, capability container.
+    pub header: [u8; 16],
+    /// User memory from page 4, as much as the CC advertises.
+    pub user: Vec<u8>,
+}
+
 /// Field order matters: Device must be dropped before Context.
 pub struct Reader {
     dev: Device,
@@ -85,6 +116,61 @@ impl Reader {
             }),
             _ => bail!("not an ISO14443-A target"),
         }
+    }
+
+    /// Select, and refuse anything that is not an ISO-DEP tag. Every DNA
+    /// operation starts here, so a Type 2 sticker gets a clear message
+    /// instead of a failed APDU.
+    pub fn select_dna(&mut self) -> Result<Tag> {
+        let t = self.select()?;
+        match t.kind() {
+            TagKind::IsoDep => Ok(t),
+            TagKind::Type2 => bail!(
+                "this is a Type 2 tag (NTAG21x/Ultralight), not an NTAG 424 DNA — read it with 'r'"
+            ),
+            TagKind::Other => bail!("SAK {:02X}: not an NTAG 424 DNA", t.sak),
+        }
+    }
+
+    /// Type 2 READ (0x30): four pages from `page`, 16 bytes. Never writes.
+    pub fn t2_read(&mut self, page: u8) -> Result<[u8; 16]> {
+        let r = self
+            .dev
+            .initiator_transceive_bytes(&[0x30, page], 16, Timeout::Default)
+            .map_err(|e| anyhow!("READ page {page}: {e:?}"))?;
+        r.get(..16)
+            .and_then(|b| b.try_into().ok())
+            .ok_or_else(|| anyhow!("READ page {page}: short response ({} bytes)", r.len()))
+    }
+
+    /// Type 2 GET_VERSION (0x60). None when the chip does not answer it, as
+    /// the original Ultralight and many clones do not. The failed command
+    /// halts the tag, so it is re-selected before returning.
+    pub fn t2_version(&mut self) -> Option<Vec<u8>> {
+        match self.dev.initiator_transceive_bytes(&[0x60], 8, Timeout::Default) {
+            Ok(v) if v.len() >= 8 => Some(v),
+            _ => {
+                self.select().ok();
+                None
+            }
+        }
+    }
+
+    /// Everything a Type 2 tag shows without authentication or writes.
+    pub fn read_type2(&mut self) -> Result<Type2Dump> {
+        let version = self.t2_version();
+        let header = self.t2_read(0)?;
+        let cc = crate::type2::Cc::parse(&header[12..16]);
+        // Unformatted tags advertise nothing; read a small window anyway.
+        let bytes = if cc.ndef_formatted { cc.data_bytes.clamp(16, 1024) } else { 48 };
+        let mut user = Vec::with_capacity(bytes + 16);
+        let mut page = 4u8;
+        while user.len() < bytes {
+            user.extend_from_slice(&self.t2_read(page)?);
+            page = page.checked_add(4).ok_or_else(|| anyhow!("page counter overflow"))?;
+        }
+        user.truncate(bytes);
+        Ok(Type2Dump { version, header, user })
     }
 
     /// One APDU. Returns the body and the two status bytes separately.
