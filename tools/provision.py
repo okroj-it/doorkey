@@ -55,6 +55,7 @@ def rotl(b: bytes) -> bytes:
 # Set from --origin / DOORKEY_ORIGIN in main(): the stages that write the URL
 # or size the SDM file need it, --check does not.
 SDM_URL_TEMPLATE = ""
+LABEL = "tag-1"  # set from --label in main()
 
 
 def sdm_template(origin: str) -> str:
@@ -359,6 +360,14 @@ def stage_test_changekey(tag) -> None:
 
 
 
+def tag_code(uid: bytes, wrapped: bytes, label: str) -> str:
+    """The tag code doorkey's admin page and `tag:add` take; matches
+    encodeTagCode in src/tag-code.ts (same test vector)."""
+    import base64
+    b64 = base64.urlsafe_b64encode(label.encode()).rstrip(b"=").decode()
+    return f"dktag1.{uid.hex()}.{wrapped.hex()}.{b64}"
+
+
 def wrap_key(kek: bytes, plain: bytes) -> bytes:
     """Matches unwrapKey() in src/auth/kek.ts: nonce(12) || ct || tag(16)."""
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -447,9 +456,13 @@ def stage_keys(tag) -> None:
     c.authenticate_ev2_first(0, k0)
     print("  verified: session opens with the derived K0")
 
-    print("\n  enrol with:")
+    wrapped = wrap_key(kek, k3)
+    print("\n  enrol: paste this tag code into doorkey's admin page (Door -> DNA tags)")
+    print("  or run `bun cli/doorkey.ts tag:add <code>`:")
+    print(f"  {tag_code(uid, wrapped, LABEL)}")
+    print("\n  or, with direct Postgres access:")
     print(f"  insert into tags (uid, label, mac_key_enc) values "
-          f"('\\x{uid.hex()}', 'tag-1', '\\x{wrap_key(kek, k3).hex()}');")
+          f"('\\x{uid.hex()}', '{LABEL}', '\\x{wrapped.hex()}');")
 
 
 def main() -> int:
@@ -463,10 +476,13 @@ def main() -> int:
     ap.add_argument("--write-url", action="store_true",
                     help="stage 2: write the SUN URL and enable SDM (reversible)")
     ap.add_argument("--device", default="tty:USB0:pn532")
+    ap.add_argument("--label", default="tag-1", help="label for the enrolment code (default: tag-1)")
     ap.add_argument("--origin", default=os.environ.get("DOORKEY_ORIGIN", ""),
                     help="doorkey's public origin, e.g. https://door.example.com "
                          "(default: $DOORKEY_ORIGIN)")
     args = ap.parse_args()
+    global LABEL
+    LABEL = args.label
 
     if not (args.check or args.write_url or args.test_changekey or args.keys):
         ap.error("pick a stage: --check, --write-url, --test-changekey or --keys")
