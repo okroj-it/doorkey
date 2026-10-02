@@ -9,6 +9,7 @@ mod db;
 mod ev2;
 mod ndef;
 mod nfc;
+mod t2write;
 mod type2;
 mod ui;
 
