@@ -6,6 +6,8 @@
 //! static lock bytes; page 3 is the capability container; user memory with
 //! the TLVs (and the NDEF message) starts at page 4.
 
+use crate::ndef;
+
 /// GET_VERSION (0x60), when the chip answers it. Genuine NTAG21x and
 /// Ultralight EV1 do; the original Ultralight and many clones do not.
 #[derive(Debug, Clone, PartialEq)]
@@ -155,47 +157,15 @@ fn tlv_len(b: &[u8]) -> Option<(usize, usize)> {
 
 /// The first record of an NDEF message.
 fn record(msg: &[u8]) -> Content {
-    let Some(&flags) = msg.first() else {
-        return Content::Malformed("empty message");
+    let r = match ndef::parse_record(msg) {
+        Ok((r, _)) => r,
+        Err(why) => return Content::Malformed(why),
     };
-    let tnf = flags & 0x07;
-    let short = flags & 0x10 != 0;
-    let has_id = flags & 0x08 != 0;
-    let Some(type_len) = msg.get(1).map(|&n| n as usize) else {
-        return Content::Malformed("no type length");
-    };
-    let (payload_len, mut p) = if short {
-        let Some(&n) = msg.get(2) else {
-            return Content::Malformed("no payload length");
-        };
-        (n as usize, 3)
-    } else {
-        let Some(n) = msg.get(2..6) else {
-            return Content::Malformed("no payload length");
-        };
-        (u32::from_be_bytes([n[0], n[1], n[2], n[3]]) as usize, 6)
-    };
-    let id_len = if has_id {
-        let Some(&n) = msg.get(p) else {
-            return Content::Malformed("no id length");
-        };
-        p += 1;
-        n as usize
-    } else {
-        0
-    };
-    let Some(record_type) = msg.get(p..p + type_len) else {
-        return Content::Malformed("type truncated");
-    };
-    p += type_len + id_len;
-    let Some(payload) = msg.get(p..p + payload_len) else {
-        return Content::Malformed("payload truncated");
-    };
-
-    match (tnf, record_type) {
+    let payload = &r.payload;
+    match (r.tnf, r.record_type.as_slice()) {
         (0x01, b"U") if !payload.is_empty() => Content::Uri(format!(
             "{}{}",
-            uri_prefix(payload[0]),
+            ndef::uri_prefix(payload[0]),
             String::from_utf8_lossy(&payload[1..])
         )),
         (0x01, b"T") if !payload.is_empty() => {
@@ -205,23 +175,10 @@ fn record(msg: &[u8]) -> Content {
             )
         }
         _ => Content::Other {
-            tnf,
-            record_type: record_type.to_vec(),
-            len: payload_len,
+            tnf: r.tnf,
+            record_type: r.record_type.clone(),
+            len: payload.len(),
         },
-    }
-}
-
-/// NFC Forum URI record prefix codes (the common ones).
-fn uri_prefix(code: u8) -> &'static str {
-    match code {
-        0x01 => "http://www.",
-        0x02 => "https://www.",
-        0x03 => "http://",
-        0x04 => "https://",
-        0x05 => "tel:",
-        0x06 => "mailto:",
-        _ => "",
     }
 }
 
