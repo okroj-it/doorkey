@@ -78,6 +78,7 @@ pub fn describe(r: &Record) -> String {
             format!("URL  {}{}", uri_prefix(p[0]), String::from_utf8_lossy(&p[1..]))
         }
         (0x01, b"T") if !p.is_empty() => text(p),
+        (0x01, b"Sp") => smart_poster(p),
         (0x00, _) => "empty record".into(),
         (0x02, b"application/vnd.wfa.wsc") => wifi(p),
         (0x02, b"text/vcard" | b"text/x-vcard") => vcard(&String::from_utf8_lossy(p)),
@@ -265,19 +266,54 @@ fn mime(media_type: &str, p: &[u8]) -> String {
 /// Text RTD: status byte (bit 7 UTF-16, bits 0-5 language code length),
 /// the IANA language code, then the text.
 fn text(p: &[u8]) -> String {
-    let lang_len = (p[0] & 0x3F) as usize;
-    let lang = String::from_utf8_lossy(p.get(1..1 + lang_len).unwrap_or(&[])).into_owned();
-    let body = p.get(1 + lang_len..).unwrap_or(&[]);
-    let text = if p[0] & 0x80 != 0 {
-        utf16(body)
-    } else {
-        String::from_utf8_lossy(body).into_owned()
-    };
+    let (lang, text) = text_parts(p);
     if lang.is_empty() {
         format!("text  {text}")
     } else {
         format!("text [{lang}]  {text}")
     }
+}
+
+/// (language, text) of a Text RTD payload.
+fn text_parts(p: &[u8]) -> (String, String) {
+    let Some(&status) = p.first() else { return (String::new(), String::new()) };
+    let lang_len = (status & 0x3F) as usize;
+    let lang = String::from_utf8_lossy(p.get(1..1 + lang_len).unwrap_or(&[])).into_owned();
+    let body = p.get(1 + lang_len..).unwrap_or(&[]);
+    let text = if status & 0x80 != 0 {
+        utf16(body)
+    } else {
+        String::from_utf8_lossy(body).into_owned()
+    };
+    (lang, text)
+}
+
+/// Smart Poster: a nested message with the URI, titles and hints.
+fn smart_poster(p: &[u8]) -> String {
+    let Ok(inner) = records(p) else { return "smart poster, malformed".into() };
+    let uri = inner
+        .iter()
+        .find(|r| r.tnf == 0x01 && r.record_type == b"U" && !r.payload.is_empty())
+        .map_or("?".into(), |r| format!("{}{}", uri_prefix(r.payload[0]), String::from_utf8_lossy(&r.payload[1..])));
+    let mut out = format!("smart poster  {uri}");
+    for t in inner.iter().filter(|r| r.tnf == 0x01 && r.record_type == b"T") {
+        let (lang, title) = text_parts(&t.payload);
+        out += &if lang.is_empty() { format!("  \"{title}\"") } else { format!("  \"{title}\" [{lang}]") };
+    }
+    let local = |name: &[u8]| inner.iter().find(|r| r.tnf == 0x01 && r.record_type == name).map(|r| r.payload.as_slice());
+    match local(b"act") {
+        Some([0]) => out += "  action: open",
+        Some([1]) => out += "  action: save",
+        Some([2]) => out += "  action: edit",
+        _ => {}
+    }
+    if let Some(&[a, b, c, d]) = local(b"s") {
+        out += &format!("  size {} bytes", u32::from_be_bytes([a, b, c, d]));
+    }
+    if let Some(t) = local(b"t") {
+        out += &format!("  type {}", String::from_utf8_lossy(t));
+    }
+    out
 }
 
 /// UTF-16, big-endian unless a byte order mark says otherwise.
@@ -470,6 +506,22 @@ mod tests {
         assert_eq!(
             describe(&rec(2, b"application/vnd.bluetooth.le.oob", &le)),
             "Bluetooth LE  C1:22:33:44:55:66 (random)  \"Tag\"  peripheral"
+        );
+    }
+
+    #[test]
+    fn smart_poster_record() {
+        // Nested message: URI, two titles, action "save", size
+        let inner = [
+            0x91, 0x01, 0x0A, b'U', 0x04, b'x', b'.', b'e', b'x', b'a', b'm', b'p', b'l', b'e', //
+            0x11, 0x01, 0x05, b'T', 0x02, b'e', b'n', b'H', b'i', //
+            0x11, 0x01, 0x06, b'T', 0x02, b'p', b'l', b'C', b'z', b'e', //
+            0x11, 0x03, 0x01, b'a', b'c', b't', 0x01, //
+            0x51, 0x01, 0x04, b's', 0x00, 0x00, 0x04, 0x00,
+        ];
+        assert_eq!(
+            describe(&rec(1, b"Sp", &inner)),
+            "smart poster  https://x.example  \"Hi\" [en]  \"Cze\" [pl]  action: save  size 1024 bytes"
         );
     }
 
