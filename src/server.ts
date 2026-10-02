@@ -23,9 +23,22 @@ const APP_MODE = isAppMode();
 /**
  * What every listener has. Nothing else exists: no index, no hints. A guard
  * runs before every route, /healthz included.
+ *
+ * No page may be framed by another site (a keypad or the admin page inside
+ * someone else's frame is a clickjacking surface), on every response,
+ * errors included. Only the Ingress listener allows 'self': Home Assistant
+ * shows it in a frame on its own origin.
  */
-function base(guard?: (c: Context, next: Next) => Promise<Response | void>): Hono {
+function base(
+  guard?: (c: Context, next: Next) => Promise<Response | void>,
+  framing: "none" | "self" = "none",
+): Hono {
   const h = new Hono();
+  h.use("*", async (c, next) => {
+    await next();
+    c.res.headers.set("Content-Security-Policy", `frame-ancestors '${framing}'`);
+    c.res.headers.set("X-Frame-Options", framing === "none" ? "DENY" : "SAMEORIGIN");
+  });
   if (guard) h.use("*", guard);
   h.notFound((c) => c.text("Not found", 404));
   h.onError((err, c) => {
@@ -146,7 +159,7 @@ function startIngress(): void {
     const from = (c.env as Server<unknown>).requestIP(c.req.raw)?.address ?? "";
     if (from !== peer && from !== `::ffff:${peer}`) return c.text("Forbidden", 403);
     return next();
-  });
+  }, "self");
   mountAdmin(ingress);
   Bun.serve({ port, fetch: ingress.fetch });
   console.log(`doorkey admin on :${port} for Home Assistant Ingress (from ${peer} only)`);
