@@ -1,13 +1,7 @@
 /**
- * Entry point. As a Home Assistant app the settings come from the Supervisor
- * and /data, and they have to be in place before config.ts reads the
- * environment - so the server is loaded only after that.
+ * Entry point. The server is loaded only after app-env.ts has put a Home
+ * Assistant app's settings in place.
  */
-import { isAppMode, prepareAppEnv } from "./app-mode.ts";
-
-if (isAppMode()) {
-  console.log("doorkey: running as a Home Assistant app");
-  await prepareAppEnv();
-}
+import "./app-env.ts";
 
 export default (await import("./server.ts")).default;

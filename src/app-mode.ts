@@ -99,8 +99,11 @@ export function mqttEnv(d: {
   };
 }
 
-/** Put the app's settings into process.env, before config.ts loads. */
-export async function prepareAppEnv(): Promise<void> {
+/**
+ * Put the app's settings into process.env, before config.ts loads. The CLI
+ * skips the MQTT lookup: it has no use for the broker.
+ */
+export async function prepareAppEnv({ mqtt = true } = {}): Promise<void> {
   const ctx: AppContext = {
     supervisorUrl: (process.env.SUPERVISOR_URL ?? "http://supervisor").replace(
       /\/+$/,
@@ -118,6 +121,7 @@ export async function prepareAppEnv(): Promise<void> {
   );
 
   // MQTT is optional: without a broker app the keypad entities are skipped.
+  if (!mqtt) return;
   try {
     const res = await fetch(`${ctx.supervisorUrl}/services/mqtt`, {
       headers: { Authorization: `Bearer ${ctx.supervisorToken}` },
