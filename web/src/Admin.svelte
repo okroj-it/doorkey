@@ -2,13 +2,18 @@
   import { startAuthentication, startRegistration } from '@simplewebauthn/browser';
   import ActionsTab from './ActionsTab.svelte';
 
-  const enrollToken = location.pathname.match(/^\/admin\/enroll\/(.+)$/)?.[1] ?? null;
+  // Everything up to and including /admin: the page is at /admin on its own
+  // host and under /api/hassio_ingress/<token>/admin in Home Assistant.
+  const BASE = location.pathname.slice(0, location.pathname.indexOf('/admin') + '/admin'.length);
+  const enrollToken = location.pathname.slice(BASE.length).match(/^\/enroll\/(.+)$/)?.[1] ?? null;
 
   let view = $state('loading');   // loading | enroll | login | dashboard
   // door | actions, kept in the hash so /admin#actions deep-links.
   let tab = $state(location.hash === '#actions' ? 'actions' : 'door');
   $effect(() => { history.replaceState(null, '', tab === 'door' ? location.pathname : '#actions'); });
   let label = $state('');
+  // Signed in through Home Assistant (the app's Ingress): HA owns sign-out.
+  let viaHa = $state(false);
   let error = $state('');
   let busy = $state(false);
 
@@ -27,7 +32,7 @@
   let form = $state({ label: '', validUntil: '', maxUses: '', digits: 6 });
 
   async function api(path, options = {}) {
-    const res = await fetch(`/admin/api${path}`, {
+    const res = await fetch(`${BASE}/api${path}`, {
       headers: { 'Content-Type': 'application/json' },
       ...options,
     });
@@ -50,6 +55,7 @@
     try {
       const s = await api('/session');
       label = s.label;
+      viaHa = s.via === 'home-assistant';
       await refresh();
       view = 'dashboard';
     } catch {
@@ -86,7 +92,7 @@
         body: JSON.stringify(response),
       });
       label = out.label;
-      history.replaceState(null, '', '/admin');
+      history.replaceState(null, '', BASE);
       await refresh();
       view = 'dashboard';
     } catch (e) {
@@ -231,7 +237,7 @@
       <h1>doorkey</h1>
       <div class="who">
         <span class="muted">{label}</span>
-        <button class="link" onclick={signOut}>sign out</button>
+        {#if !viaHa}<button class="link" onclick={signOut}>sign out</button>{/if}
       </div>
     </header>
 

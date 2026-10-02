@@ -74,6 +74,11 @@ jobs:
         run: |
           export CHROME_PATH="$(command -v google-chrome-stable || command -v google-chrome)"
           scripts/e2e.sh
+      - name: As a Home Assistant app
+        if: matrix.db == 'sqlite'
+        run: |
+          export CHROME_PATH="$(command -v google-chrome-stable || command -v google-chrome)"
+          scripts/e2e-app.sh
 
   tagtui:
     runs-on: ubuntu-latest
