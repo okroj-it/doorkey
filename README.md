@@ -431,6 +431,8 @@ ghcr.io/okroj-it/doorkey:0.1       # newest 0.1.x
 ghcr.io/okroj-it/doorkey:latest    # newest release
 ```
 
+`ghcr.io/okroj-it/doorkey-app` is the same release packaged for the Home Assistant app (the Dockerfile's `app` target): it starts as root only to take over the Supervisor's root-owned `/data`, then runs doorkey as uid 1000. Use `doorkey` everywhere else.
+
 Pushing a `v1.2.3` tag builds and publishes it ([`release.yml`](.github/workflows/release.yml)), with [build provenance](https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations) you can check before deploying:
 
 ```sh

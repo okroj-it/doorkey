@@ -1,0 +1,7 @@
+#!/bin/sh
+# The CLI, as the doorkey user: for the app's backup hook (db:checkpoint) and
+# `docker exec <app> doorkey …`, which run as root in the app image. Files it
+# creates in /data must stay readable by the server.
+cd /app
+if [ "$(id -u)" = 0 ]; then exec su-exec 1000:1000 bun cli/doorkey.ts "$@"; fi
+exec bun cli/doorkey.ts "$@"
