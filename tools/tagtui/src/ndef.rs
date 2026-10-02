@@ -75,7 +75,11 @@ pub fn describe(r: &Record) -> String {
     let p = &r.payload;
     match (r.tnf, r.record_type.as_slice()) {
         (0x01, b"U") if !p.is_empty() => {
-            format!("URL  {}{}", uri_prefix(p[0]), String::from_utf8_lossy(&p[1..]))
+            format!(
+                "URL  {}{}",
+                uri_prefix(p[0]),
+                String::from_utf8_lossy(&p[1..])
+            )
         }
         (0x01, b"T") if !p.is_empty() => text(p),
         (0x01, b"Sp") => smart_poster(p),
@@ -129,7 +133,11 @@ fn wifi(p: &[u8]) -> String {
         .find(|(t, _)| *t == 0x100E)
         .map_or(top.clone(), |(_, v)| wsc_attrs(v));
     let get = |t: u16| creds.iter().find(|(k, _)| *k == t).map(|(_, v)| *v);
-    let word = |t: u16| get(t).filter(|v| v.len() == 2).map(|v| u16::from_be_bytes([v[0], v[1]]));
+    let word = |t: u16| {
+        get(t)
+            .filter(|v| v.len() == 2)
+            .map(|v| u16::from_be_bytes([v[0], v[1]]))
+    };
 
     let ssid = get(0x1045).map_or("?".into(), |v| String::from_utf8_lossy(v).into_owned());
     let auth = match word(0x1003) {
@@ -174,13 +182,21 @@ fn vcard(card: &str) -> String {
     }
     let mut fields: Vec<(String, String)> = Vec::new();
     for line in &lines {
-        let Some((key, value)) = line.split_once(':') else { continue };
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
         // "TEL;TYPE=CELL" -> "TEL"; "item1.EMAIL" -> "EMAIL"
         let name = key.split(';').next().unwrap_or("");
         let name = name.rsplit('.').next().unwrap_or("").to_ascii_uppercase();
         fields.push((name, value.trim().to_string()));
     }
-    let all = |k: &str| fields.iter().filter(|(n, _)| n == k).map(|(_, v)| v.as_str()).collect::<Vec<_>>();
+    let all = |k: &str| {
+        fields
+            .iter()
+            .filter(|(n, _)| n == k)
+            .map(|(_, v)| v.as_str())
+            .collect::<Vec<_>>()
+    };
     let name = all("FN")
         .first()
         .map(|s| s.to_string())
@@ -188,14 +204,22 @@ fn vcard(card: &str) -> String {
             // N is "family;given;additional;prefix;suffix"
             all("N").first().map(|n| {
                 let parts: Vec<&str> = n.split(';').collect();
-                let (family, given) = (parts.first().copied().unwrap_or(""), parts.get(1).copied().unwrap_or(""));
+                let (family, given) = (
+                    parts.first().copied().unwrap_or(""),
+                    parts.get(1).copied().unwrap_or(""),
+                );
                 format!("{given} {family}").trim().to_string()
             })
         })
         .unwrap_or_else(|| "?".into());
     let mut out = vec![format!("contact  {name}")];
     for k in ["TEL", "EMAIL", "ORG", "URL"] {
-        out.extend(all(k).iter().filter(|v| !v.is_empty()).map(|v| v.replace(';', " ")));
+        out.extend(
+            all(k)
+                .iter()
+                .filter(|v| !v.is_empty())
+                .map(|v| v.replace(';', " ")),
+        );
     }
     out.join(" · ")
 }
@@ -216,7 +240,11 @@ fn ad_structs(mut b: &[u8]) -> Vec<(u8, &[u8])> {
 
 /// Bluetooth addresses are stored least significant byte first.
 fn bd_addr(b: &[u8]) -> String {
-    b.iter().rev().map(|x| format!("{x:02X}")).collect::<Vec<_>>().join(":")
+    b.iter()
+        .rev()
+        .map(|x| format!("{x:02X}"))
+        .collect::<Vec<_>>()
+        .join(":")
 }
 
 fn bt_name(ad: &[(u8, &[u8])]) -> String {
@@ -224,27 +252,44 @@ fn bt_name(ad: &[(u8, &[u8])]) -> String {
     ad.iter()
         .find(|(t, _)| *t == 0x09)
         .or_else(|| ad.iter().find(|(t, _)| *t == 0x08))
-        .map_or(String::new(), |(_, v)| format!("  \"{}\"", String::from_utf8_lossy(v)))
+        .map_or(String::new(), |(_, v)| {
+            format!("  \"{}\"", String::from_utf8_lossy(v))
+        })
 }
 
 /// Classic (BR/EDR) pairing: OOB length (2, LE), address (6), then EIR data.
 fn bluetooth_classic(p: &[u8]) -> String {
-    let Some(addr) = p.get(2..8) else { return "Bluetooth, malformed".into() };
+    let Some(addr) = p.get(2..8) else {
+        return "Bluetooth, malformed".into();
+    };
     let ad = ad_structs(&p[8..]);
     let class = ad
         .iter()
         .find(|(t, v)| *t == 0x0D && v.len() == 3)
-        .map_or(String::new(), |(_, v)| format!("  class {:02X}{:02X}{:02X}", v[2], v[1], v[0]));
+        .map_or(String::new(), |(_, v)| {
+            format!("  class {:02X}{:02X}{:02X}", v[2], v[1], v[0])
+        });
     format!("Bluetooth  {}{}{class}", bd_addr(addr), bt_name(&ad))
 }
 
 /// LE pairing: AD structures only, with the address in an 0x1B structure.
 fn bluetooth_le(p: &[u8]) -> String {
     let ad = ad_structs(p);
-    let addr = ad.iter().find(|(t, v)| *t == 0x1B && v.len() == 7).map_or("address ?".into(), |(_, v)| {
-        format!("{} ({})", bd_addr(&v[..6]), if v[6] & 1 == 1 { "random" } else { "public" })
-    });
-    let role = match ad.iter().find(|(t, v)| *t == 0x1C && v.len() == 1).map(|(_, v)| v[0]) {
+    let addr =
+        ad.iter()
+            .find(|(t, v)| *t == 0x1B && v.len() == 7)
+            .map_or("address ?".into(), |(_, v)| {
+                format!(
+                    "{} ({})",
+                    bd_addr(&v[..6]),
+                    if v[6] & 1 == 1 { "random" } else { "public" }
+                )
+            });
+    let role = match ad
+        .iter()
+        .find(|(t, v)| *t == 0x1C && v.len() == 1)
+        .map(|(_, v)| v[0])
+    {
         Some(0x00) => "  peripheral",
         Some(0x01) => "  central",
         Some(0x02) => "  peripheral (central possible)",
@@ -258,7 +303,8 @@ fn bluetooth_le(p: &[u8]) -> String {
 /// records usually come with the carrier's own record (Wi-Fi, Bluetooth)
 /// next to them in the same message, which is decoded on its own line.
 fn well_known(t: &[u8], p: &[u8]) -> String {
-    let version = |b: Option<&u8>| b.map_or(String::new(), |v| format!(" v{}.{}", v >> 4, v & 0x0F));
+    let version =
+        |b: Option<&u8>| b.map_or(String::new(), |v| format!(" v{}.{}", v >> 4, v & 0x0F));
     match t {
         b"Hs" => format!("connection handover select{}", version(p.first())),
         b"Hr" => format!("connection handover request{}", version(p.first())),
@@ -267,7 +313,9 @@ fn well_known(t: &[u8], p: &[u8]) -> String {
         b"Hc" => {
             // CTF (1), carrier type length (1), carrier type
             let len = p.get(1).copied().unwrap_or(0) as usize;
-            let carrier = p.get(2..2 + len).map_or("?".into(), |c| String::from_utf8_lossy(c).into_owned());
+            let carrier = p
+                .get(2..2 + len)
+                .map_or("?".into(), |c| String::from_utf8_lossy(c).into_owned());
             format!("handover carrier  {carrier}")
         }
         b"ac" => {
@@ -280,9 +328,16 @@ fn well_known(t: &[u8], p: &[u8]) -> String {
             format!("alternative carrier ({state})")
         }
         b"cr" => "handover collision resolution".into(),
-        b"Sig" => format!("signature record{}", p.first().map_or(String::new(), |v| format!(" v{v}"))),
+        b"Sig" => format!(
+            "signature record{}",
+            p.first().map_or(String::new(), |v| format!(" v{v}"))
+        ),
         b"Di" => "device information".into(),
-        _ => format!("well-known type {}, {} bytes", String::from_utf8_lossy(t), p.len()),
+        _ => format!(
+            "well-known type {}, {} bytes",
+            String::from_utf8_lossy(t),
+            p.len()
+        ),
     }
 }
 
@@ -309,7 +364,9 @@ fn text(p: &[u8]) -> String {
 
 /// (language, text) of a Text RTD payload.
 fn text_parts(p: &[u8]) -> (String, String) {
-    let Some(&status) = p.first() else { return (String::new(), String::new()) };
+    let Some(&status) = p.first() else {
+        return (String::new(), String::new());
+    };
     let lang_len = (status & 0x3F) as usize;
     let lang = String::from_utf8_lossy(p.get(1..1 + lang_len).unwrap_or(&[])).into_owned();
     let body = p.get(1 + lang_len..).unwrap_or(&[]);
@@ -323,17 +380,37 @@ fn text_parts(p: &[u8]) -> (String, String) {
 
 /// Smart Poster: a nested message with the URI, titles and hints.
 fn smart_poster(p: &[u8]) -> String {
-    let Ok(inner) = records(p) else { return "smart poster, malformed".into() };
+    let Ok(inner) = records(p) else {
+        return "smart poster, malformed".into();
+    };
     let uri = inner
         .iter()
         .find(|r| r.tnf == 0x01 && r.record_type == b"U" && !r.payload.is_empty())
-        .map_or("?".into(), |r| format!("{}{}", uri_prefix(r.payload[0]), String::from_utf8_lossy(&r.payload[1..])));
+        .map_or("?".into(), |r| {
+            format!(
+                "{}{}",
+                uri_prefix(r.payload[0]),
+                String::from_utf8_lossy(&r.payload[1..])
+            )
+        });
     let mut out = format!("smart poster  {uri}");
-    for t in inner.iter().filter(|r| r.tnf == 0x01 && r.record_type == b"T") {
+    for t in inner
+        .iter()
+        .filter(|r| r.tnf == 0x01 && r.record_type == b"T")
+    {
         let (lang, title) = text_parts(&t.payload);
-        out += &if lang.is_empty() { format!("  \"{title}\"") } else { format!("  \"{title}\" [{lang}]") };
+        out += &if lang.is_empty() {
+            format!("  \"{title}\"")
+        } else {
+            format!("  \"{title}\" [{lang}]")
+        };
     }
-    let local = |name: &[u8]| inner.iter().find(|r| r.tnf == 0x01 && r.record_type == name).map(|r| r.payload.as_slice());
+    let local = |name: &[u8]| {
+        inner
+            .iter()
+            .find(|r| r.tnf == 0x01 && r.record_type == name)
+            .map(|r| r.payload.as_slice())
+    };
     match local(b"act") {
         Some([0]) => out += "  action: open",
         Some([1]) => out += "  action: save",
@@ -360,7 +437,13 @@ fn utf16(b: &[u8]) -> String {
         .as_chunks::<2>()
         .0
         .iter()
-        .map(|&pair| if little { u16::from_le_bytes(pair) } else { u16::from_be_bytes(pair) })
+        .map(|&pair| {
+            if little {
+                u16::from_le_bytes(pair)
+            } else {
+                u16::from_be_bytes(pair)
+            }
+        })
         .collect();
     String::from_utf16_lossy(&units)
 }
@@ -452,7 +535,10 @@ mod tests {
 
     #[test]
     fn chunked_records_are_refused() {
-        assert_eq!(records(&[0xB1, 0x01, 0x01, b'U', 0x04]), Err("chunked records are not supported"));
+        assert_eq!(
+            records(&[0xB1, 0x01, 0x01, b'U', 0x04]),
+            Err("chunked records are not supported")
+        );
     }
 
     fn rec(tnf: u8, record_type: &[u8], payload: &[u8]) -> Record {
@@ -468,12 +554,30 @@ mod tests {
     #[test]
     fn record_kinds() {
         assert_eq!(describe(&rec(0, b"", b"")), "empty record");
-        assert_eq!(describe(&rec(3, b"https://x.example/", b"")), "URI  https://x.example/");
-        assert_eq!(describe(&rec(4, b"android.com:pkg", b"com.example.app")), "Android app  com.example.app");
-        assert_eq!(describe(&rec(4, b"example.com:thing", b"abc")), "external type example.com:thing, 3 bytes");
-        assert_eq!(describe(&rec(5, b"", b"ab")), "unknown-type record, 2 bytes");
-        assert_eq!(describe(&rec(2, b"text/plain", b"hello\n")), "text/plain  hello");
-        assert_eq!(describe(&rec(2, b"image/png", &[0x89, b'P'])), "image/png, 2 bytes");
+        assert_eq!(
+            describe(&rec(3, b"https://x.example/", b"")),
+            "URI  https://x.example/"
+        );
+        assert_eq!(
+            describe(&rec(4, b"android.com:pkg", b"com.example.app")),
+            "Android app  com.example.app"
+        );
+        assert_eq!(
+            describe(&rec(4, b"example.com:thing", b"abc")),
+            "external type example.com:thing, 3 bytes"
+        );
+        assert_eq!(
+            describe(&rec(5, b"", b"ab")),
+            "unknown-type record, 2 bytes"
+        );
+        assert_eq!(
+            describe(&rec(2, b"text/plain", b"hello\n")),
+            "text/plain  hello"
+        );
+        assert_eq!(
+            describe(&rec(2, b"image/png", &[0x89, b'P'])),
+            "image/png, 2 bytes"
+        );
     }
 
     /// A WSC attribute: type, length, value.
@@ -502,7 +606,10 @@ mod tests {
         let mut open = attr(0x1045, b"Cafe");
         open.extend(attr(0x1003, &[0x00, 0x01]));
         open.extend(attr(0x100F, &[0x00, 0x01]));
-        assert_eq!(describe(&rec(2, b"application/vnd.wfa.wsc", &open)), "Wi-Fi  \"Cafe\"  open/none  no key");
+        assert_eq!(
+            describe(&rec(2, b"application/vnd.wfa.wsc", &open)),
+            "Wi-Fi  \"Cafe\"  open/none  no key"
+        );
     }
 
     #[test]
@@ -516,7 +623,10 @@ mod tests {
         );
         // No FN: fall back to the structured name.
         let bare = "BEGIN:VCARD\nN:Doe;John\nEND:VCARD";
-        assert_eq!(describe(&rec(2, b"text/x-vcard", bare.as_bytes())), "contact  John Doe");
+        assert_eq!(
+            describe(&rec(2, b"text/x-vcard", bare.as_bytes())),
+            "contact  John Doe"
+        );
     }
 
     #[test]
@@ -546,7 +656,8 @@ mod tests {
     fn smart_poster_record() {
         // Nested message: URI, two titles, action "save", size
         let inner = [
-            0x91, 0x01, 0x0A, b'U', 0x04, b'x', b'.', b'e', b'x', b'a', b'm', b'p', b'l', b'e', //
+            0x91, 0x01, 0x0A, b'U', 0x04, b'x', b'.', b'e', b'x', b'a', b'm', b'p', b'l',
+            b'e', //
             0x11, 0x01, 0x05, b'T', 0x02, b'e', b'n', b'H', b'i', //
             0x11, 0x01, 0x06, b'T', 0x02, b'p', b'l', b'C', b'z', b'e', //
             0x11, 0x03, 0x01, b'a', b'c', b't', 0x01, //
@@ -560,23 +671,46 @@ mod tests {
 
     #[test]
     fn other_well_known_types() {
-        assert_eq!(describe(&rec(1, b"Hs", &[0x13])), "connection handover select v1.3");
-        assert_eq!(describe(&rec(1, b"Hr", &[0x12, 0xAB])), "connection handover request v1.2");
-        let carrier = [0x02, 0x0A, b'w', b'i', b'f', b'i', b'.', b'o', b'r', b'g', b'/', b'x'];
-        assert_eq!(describe(&rec(1, b"Hc", &carrier)), "handover carrier  wifi.org/x");
-        assert_eq!(describe(&rec(1, b"ac", &[0x01, 0x01, b'0', 0x00])), "alternative carrier (active)");
+        assert_eq!(
+            describe(&rec(1, b"Hs", &[0x13])),
+            "connection handover select v1.3"
+        );
+        assert_eq!(
+            describe(&rec(1, b"Hr", &[0x12, 0xAB])),
+            "connection handover request v1.2"
+        );
+        let carrier = [
+            0x02, 0x0A, b'w', b'i', b'f', b'i', b'.', b'o', b'r', b'g', b'/', b'x',
+        ];
+        assert_eq!(
+            describe(&rec(1, b"Hc", &carrier)),
+            "handover carrier  wifi.org/x"
+        );
+        assert_eq!(
+            describe(&rec(1, b"ac", &[0x01, 0x01, b'0', 0x00])),
+            "alternative carrier (active)"
+        );
         assert_eq!(describe(&rec(1, b"Sig", &[0x02])), "signature record v2");
-        assert_eq!(describe(&rec(1, b"Xy", &[1, 2, 3])), "well-known type Xy, 3 bytes");
+        assert_eq!(
+            describe(&rec(1, b"Xy", &[1, 2, 3])),
+            "well-known type Xy, 3 bytes"
+        );
     }
 
     #[test]
     fn text_encodings() {
         // UTF-8 with a language code: "koń" (ń = C5 84)
-        assert_eq!(text(&[0x02, b'p', b'l', b'k', b'o', 0xC5, 0x84]), "text [pl]  ko\u{144}");
+        assert_eq!(
+            text(&[0x02, b'p', b'l', b'k', b'o', 0xC5, 0x84]),
+            "text [pl]  ko\u{144}"
+        );
         // UTF-16 big-endian, no language code
         assert_eq!(text(&[0x80, 0x00, b'h', 0x00, b'i']), "text  hi");
         // UTF-16 with a little-endian byte order mark
-        assert_eq!(text(&[0x82, b'e', b'n', 0xFF, 0xFE, 0x1F, 0x01]), "text [en]  \u{11F}");
+        assert_eq!(
+            text(&[0x82, b'e', b'n', 0xFF, 0xFE, 0x1F, 0x01]),
+            "text [en]  \u{11F}"
+        );
     }
 
     #[test]
