@@ -144,10 +144,17 @@ impl Reader {
     }
 
     /// Type 2 GET_VERSION (0x60). None when the chip does not answer it, as
-    /// the original Ultralight and many clones do not. The failed command
-    /// halts the tag, so it is re-selected before returning.
+    /// the original Ultralight does not. The failed command halts the tag,
+    /// so it is re-selected before returning.
+    ///
+    /// Sent as a raw frame: with easy framing the PN532 wraps it in
+    /// InDataExchange, which takes 0x60 for a MIFARE Classic authentication
+    /// and never sends it, so even a genuine NTAG21x looked silent.
     pub fn t2_version(&mut self) -> Option<Vec<u8>> {
-        match self.dev.initiator_transceive_bytes(&[0x60], 8, Timeout::Default) {
+        self.dev.set_property_bool(Property::EasyFraming, false).ok();
+        let r = self.dev.initiator_transceive_bytes(&[0x60], 8, Timeout::Default);
+        self.dev.set_property_bool(Property::EasyFraming, true).ok();
+        match r {
             Ok(v) if v.len() >= 8 => Some(v),
             _ => {
                 self.select().ok();
