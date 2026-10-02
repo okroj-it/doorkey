@@ -12,6 +12,8 @@ pub struct Record {
     pub payload: Vec<u8>,
     /// ME flag: the last record of the message.
     pub last: bool,
+    /// CF flag: the payload continues in the next record.
+    pub chunked: bool,
 }
 
 /// Parse the record at the start of `msg`. Returns it and the number of
@@ -45,8 +47,47 @@ pub fn parse_record(msg: &[u8]) -> Result<(Record, usize), &'static str> {
         record_type,
         payload,
         last: flags & 0x40 != 0,
+        chunked: flags & 0x20 != 0,
     };
     Ok((record, p + payload_len))
+}
+
+/// Every record of a message, in order, up to the one flagged last.
+pub fn records(msg: &[u8]) -> Result<Vec<Record>, &'static str> {
+    let mut out = Vec::new();
+    let mut rest = msg;
+    loop {
+        let (r, used) = parse_record(rest)?;
+        if r.chunked {
+            return Err("chunked records are not supported");
+        }
+        let last = r.last;
+        out.push(r);
+        rest = &rest[used..];
+        if last || rest.is_empty() {
+            return Ok(out);
+        }
+    }
+}
+
+/// One line describing a record. Types without a decoder are named.
+pub fn describe(r: &Record) -> String {
+    let p = &r.payload;
+    match (r.tnf, r.record_type.as_slice()) {
+        (0x01, b"U") if !p.is_empty() => {
+            format!("URL  {}{}", uri_prefix(p[0]), String::from_utf8_lossy(&p[1..]))
+        }
+        (0x01, b"T") if !p.is_empty() => {
+            let lang = (p[0] & 0x3F) as usize;
+            format!("text  {}", String::from_utf8_lossy(p.get(1 + lang..).unwrap_or(&[])))
+        }
+        _ => format!(
+            "record TNF {}, type {:?}, {} bytes",
+            r.tnf,
+            String::from_utf8_lossy(&r.record_type),
+            p.len()
+        ),
+    }
 }
 
 /// NFC Forum URI record prefix codes (the common ones).
@@ -89,6 +130,22 @@ mod tests {
             (r.record_type.as_slice(), r.payload.as_slice(), used),
             (b"T".as_slice(), [0x42].as_slice(), 11)
         );
+    }
+
+    #[test]
+    fn walks_every_record() {
+        // URI record (MB), then a text record (ME)
+        let msg = [
+            0x91, 0x01, 0x04, b'U', 0x04, b'a', b'.', b'b', //
+            0x51, 0x01, 0x04, b'T', 0x02, b'e', b'n', b'h',
+        ];
+        let lines: Vec<String> = records(&msg).unwrap().iter().map(describe).collect();
+        assert_eq!(lines, ["URL  https://a.b", "text  h"]);
+    }
+
+    #[test]
+    fn chunked_records_are_refused() {
+        assert_eq!(records(&[0xB1, 0x01, 0x01, b'U', 0x04]), Err("chunked records are not supported"));
     }
 
     #[test]
