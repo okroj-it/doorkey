@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { normaliseRow, param } from "../src/db-values.ts";
+import { constraintKind, normaliseRow, param } from "../src/db-values.ts";
 
 describe("param", () => {
   test("dates go out as ISO-8601 UTC text, for both", () => {
@@ -51,5 +51,22 @@ describe("normaliseRow", () => {
     const row = normaliseRow({ active: true, created_at: at, schedule: [{ dow: [0] }], roles: [], public_key: key, n: 2 });
     expect(row).toEqual({ active: true, created_at: at, schedule: [{ dow: [0] }], roles: [], public_key: key, n: 2 });
     expect(row.public_key).toBe(key);
+  });
+});
+
+describe("constraintKind", () => {
+  test("Postgres SQLSTATEs", () => {
+    expect(constraintKind({ code: "ERR_POSTGRES_SERVER_ERROR", errno: "23505" })).toBe("unique");
+    expect(constraintKind({ code: "ERR_POSTGRES_SERVER_ERROR", errno: "23503" })).toBe("foreign_key");
+  });
+  test("SQLite codes", () => {
+    expect(constraintKind({ code: "SQLITE_CONSTRAINT_UNIQUE", errno: 2067 })).toBe("unique");
+    expect(constraintKind({ code: "SQLITE_CONSTRAINT_FOREIGNKEY", errno: 787 })).toBe("foreign_key");
+    expect(constraintKind({ code: "SQLITE_CONSTRAINT_TRIGGER", errno: 1811 })).toBe("foreign_key");
+  });
+  test("anything else", () => {
+    expect(constraintKind(new Error("boom"))).toBeNull();
+    expect(constraintKind(null)).toBeNull();
+    expect(constraintKind({ errno: "42P01" })).toBeNull();
   });
 });

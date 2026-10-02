@@ -44,3 +44,21 @@ export function normaliseRow<T extends Record<string, unknown>>(row: T): T {
   for (const [k, v] of Object.entries(row)) out[k] = value(k, v);
   return out as T;
 }
+
+/**
+ * Which constraint a failed query broke, whichever driver threw it.
+ * Postgres reports a SQLSTATE (Bun puts it in errno); SQLite a code such as
+ * SQLITE_CONSTRAINT_UNIQUE. An ON DELETE RESTRICT shows up in SQLite as a
+ * trigger constraint.
+ */
+export function constraintKind(err: unknown): "unique" | "foreign_key" | null {
+  const e = err as { errno?: unknown; code?: unknown } | null;
+  const codes = [e?.errno, e?.code].filter((v): v is string => typeof v === "string");
+  if (codes.some((c) => c === "23505" || c === "SQLITE_CONSTRAINT_UNIQUE" || c === "SQLITE_CONSTRAINT_PRIMARYKEY")) {
+    return "unique";
+  }
+  if (codes.some((c) => c === "23503" || c === "SQLITE_CONSTRAINT_FOREIGNKEY" || c === "SQLITE_CONSTRAINT_TRIGGER")) {
+    return "foreign_key";
+  }
+  return null;
+}

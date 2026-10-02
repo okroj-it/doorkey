@@ -4,6 +4,7 @@ import { config } from "../config.ts";
 import { generateCode, hashCode } from "../codes.ts";
 import { hashToken, newToken } from "../actions/policy.ts";
 import * as db from "../db.ts";
+import { constraintKind } from "../db-values.ts";
 import * as ha from "../ha.ts";
 import * as lockout from "../lockout.ts";
 import { publishState } from "../unlock.ts";
@@ -274,12 +275,6 @@ const SLUG = /^[a-z0-9][a-z0-9-]{0,62}$/;
 const SCRIPT = /^script\.[a-z0-9_]+$/;
 const ROLE = /^[a-z0-9][a-z0-9_-]{0,31}$/;
 
-/** Postgres SQLSTATE of a failed query, if it was one. */
-function sqlState(err: unknown): string | undefined {
-  const e = err as { errno?: unknown; code?: unknown };
-  for (const v of [e?.errno, e?.code]) if (typeof v === "string" && /^[0-9A-Z]{5}$/.test(v)) return v;
-  return undefined;
-}
 
 async function body<T>(c: Context): Promise<Partial<T>> {
   return ((await c.req.json().catch(() => ({}))) ?? {}) as Partial<T>;
@@ -328,7 +323,7 @@ admin.post("/api/actions", async (c) => {
     await db.logAdminEvent("action_created", `${slug} -> ${script}`, ip(c));
     return c.json({ id });
   } catch (err) {
-    if (sqlState(err) === "23505") return c.json({ error: `action ${slug} already exists` }, 409);
+    if (constraintKind(err) === "unique") return c.json({ error: `action ${slug} already exists` }, 409);
     throw err;
   }
 });
@@ -354,7 +349,7 @@ admin.delete("/api/actions/:id", async (c) => {
   try {
     await db.deleteAction(id);
   } catch (err) {
-    if (sqlState(err) === "23503") return c.json({ error: "unlink its DNA tag first" }, 409);
+    if (constraintKind(err) === "foreign_key") return c.json({ error: "unlink its DNA tag first" }, 409);
     throw err;
   }
   await db.logAdminEvent("action_deleted", `id ${id}`, ip(c));
@@ -423,7 +418,7 @@ admin.post("/api/action-users", async (c) => {
     await db.logAdminEvent("action_user_created", name, ip(c));
     return c.json({ id });
   } catch (err) {
-    if (sqlState(err) === "23505") return c.json({ error: `user ${name} already exists` }, 409);
+    if (constraintKind(err) === "unique") return c.json({ error: `user ${name} already exists` }, 409);
     throw err;
   }
 });
