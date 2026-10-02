@@ -421,6 +421,24 @@ kubectl create secret generic doorkey-secrets -n doorkey --from-env-file=doorkey
 kubectl apply -f deploy/kubernetes/doorkey.yaml
 ```
 
+### Prebuilt images
+
+Every release is a multi-arch image (`linux/amd64`, `linux/arm64`) on GitHub's registry:
+
+```text
+ghcr.io/okroj-it/doorkey:0.1.0     # one release — pin this
+ghcr.io/okroj-it/doorkey:0.1       # newest 0.1.x
+ghcr.io/okroj-it/doorkey:latest    # newest release
+```
+
+Pushing a `v1.2.3` tag builds and publishes it ([`release.yml`](.github/workflows/release.yml)), with [build provenance](https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations) you can check before deploying:
+
+```sh
+gh attestation verify oci://ghcr.io/okroj-it/doorkey:0.1.0 --owner okroj-it
+```
+
+What changed between releases: [CHANGELOG.md](CHANGELOG.md).
+
 ### Building the image yourself
 
 ```sh
