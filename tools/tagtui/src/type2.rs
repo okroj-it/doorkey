@@ -152,6 +152,40 @@ fn tlv_len(b: &[u8]) -> Option<(usize, usize)> {
     }
 }
 
+/// What to write to user memory (from page 4) so it holds `msg`: the tag's
+/// leading lock/memory control TLVs kept byte for byte, then the NDEF TLV
+/// and a terminator, padded to whole pages.
+pub fn user_area_for(current: &[u8], capacity: usize, msg: &[u8]) -> Result<Vec<u8>, String> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while let Some(&t) = current.get(i) {
+        match t {
+            0x00 => i += 1,
+            0x01 | 0x02 => {
+                let (len, hdr) = tlv_len(&current[i + 1..]).ok_or("truncated control TLV")?;
+                let end = i + 1 + hdr + len;
+                out.extend_from_slice(current.get(i..end).ok_or("control TLV past the end")?);
+                i = end;
+            }
+            _ => break,
+        }
+    }
+    out.push(0x03);
+    if msg.len() < 0xFF {
+        out.push(msg.len() as u8);
+    } else {
+        out.push(0xFF);
+        out.extend_from_slice(&(msg.len() as u16).to_be_bytes());
+    }
+    out.extend_from_slice(msg);
+    out.push(0xFE);
+    if out.len() > capacity {
+        return Err(format!("needs {} bytes, the tag holds {capacity}", out.len()));
+    }
+    out.resize(out.len().div_ceil(4) * 4, 0x00);
+    Ok(out)
+}
+
 /// Labelled rows for the screen and for --probe.
 pub struct Summary {
     pub identity: Vec<(&'static str, String)>,
@@ -318,6 +352,30 @@ mod tests {
         // Pages 0-7 hold data; the all-zero rows after them are left out.
         assert_eq!(s.pages.len(), 2);
         assert_eq!(s.pages[1], "  4  0103A00C 340300FE 00000000 00000000");
+    }
+
+    #[test]
+    fn write_plan_keeps_the_lock_control_tlv() {
+        let msg = crate::ndef::uri_record("https://door.example.com/a/x?t=abc");
+        let area = user_area_for(&BLANK[16..], 144, &msg).unwrap();
+        assert_eq!(&area[..5], &[0x01, 0x03, 0xA0, 0x0C, 0x34], "lock control kept");
+        assert_eq!(&area[5..7], &[0x03, msg.len() as u8]);
+        assert_eq!(area.len() % 4, 0, "whole pages");
+        assert_eq!(
+            content(&area),
+            Content::Records(vec!["URL  https://door.example.com/a/x?t=abc".into()])
+        );
+    }
+
+    #[test]
+    fn write_plan_limits() {
+        let long = crate::ndef::uri_record(&format!("https://example.com/{}", "x".repeat(300)));
+        assert_eq!(user_area_for(&[], 144, &long), Err(format!("needs {} bytes, the tag holds 144", long.len() + 5)));
+        // 255 bytes and up use the three-byte TLV length
+        let area = user_area_for(&[], 496, &long).unwrap();
+        let [hi, lo] = (long.len() as u16).to_be_bytes();
+        assert_eq!(&area[..4], &[0x03, 0xFF, hi, lo]);
+        assert!(matches!(content(&area), Content::Records(_)));
     }
 
     #[test]
