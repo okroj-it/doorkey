@@ -26,6 +26,8 @@ export interface AppOptions {
   tag_kek?: string;
   tag_meta_key?: string;
   home_cidrs?: string[];
+  /** HA usernames allowed into the admin page if HA's users can't be read. */
+  admin_users?: string[];
   timezone?: string;
 }
 
@@ -62,6 +64,7 @@ export function appEnv(
   if (o.tag_kek) env.DOORKEY_TAG_KEK = o.tag_kek;
   if (o.tag_meta_key) env.DOORKEY_TAG_META_KEY = o.tag_meta_key;
   if (o.static_path) env.DOORKEY_STATIC_PATH = o.static_path;
+  if (o.admin_users?.length) env.DOORKEY_ADMIN_USERS = o.admin_users.join(",");
   if (o.timezone) env.TZ = o.timezone;
   return env;
 }
