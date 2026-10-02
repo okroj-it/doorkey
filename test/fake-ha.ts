@@ -16,7 +16,7 @@ Bun.serve({
       return Response.json([
         { entity_id: "script.tapgate_test", state: "off", attributes: { friendly_name: "Tapgate test" } },
         { entity_id: "script.garage_open", state: "off", attributes: { friendly_name: "Open the garage" } },
-        { entity_id: "lock.tedee_go2", state: "locked", attributes: {} },
+        { entity_id: "lock.front_door", state: "locked", attributes: {} },
       ]);
     }
     if (req.method === "POST") {

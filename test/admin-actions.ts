@@ -163,7 +163,7 @@ try {
       ].map((o) => (o as HTMLOptionElement).value);
       return (
         values.includes("script.garage_open") &&
-        !values.includes("lock.tedee_go2")
+        !values.includes("lock.front_door")
       );
     }),
   );
