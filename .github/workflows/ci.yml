@@ -1,5 +1,9 @@
 name: CI
 
+# Pull requests run everything. With master protected (PRs only, branch up
+# to date, these checks required) the merged result has already passed, so a
+# push to master only runs tagtui: its build cache is saved from master and
+# restored by pull requests.
 on:
   pull_request:
     branches: [master]
@@ -17,6 +21,7 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -35,6 +40,7 @@ jobs:
   e2e:
     name: e2e (${{ matrix.db }})
     runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
     strategy:
       fail-fast: false
       matrix:
