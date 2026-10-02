@@ -57,6 +57,7 @@ use crate::db::{self, Db};
 use crate::ev2::{self, FACTORY_KEY};
 use crate::nfc::{self, Reader};
 use crate::type2;
+use crate::{ndef, t2write};
 
 const TABS: [&str; 5] = ["Reader", "Tag", "Tap", "Write", "Database"];
 
@@ -67,6 +68,7 @@ enum Field {
     Kek,
     DbUrl,
     Label,
+    PlainUrl,
 }
 
 impl Field {
@@ -77,6 +79,7 @@ impl Field {
             Field::Kek => "KEK (hex, 64 chars)",
             Field::DbUrl => "postgres url",
             Field::Label => "tag label",
+            Field::PlainUrl => "URL for a plain tag",
         }
     }
 }
@@ -85,6 +88,8 @@ impl Field {
 enum Pending {
     WriteUrl,
     ChangeKeys,
+    WritePlain,
+    UnprotectPlain,
 }
 
 pub struct App {
@@ -102,6 +107,9 @@ pub struct App {
     tap_ok: Option<bool>,
     tap_lines: Vec<Line<'static>>,
     write_lines: Vec<Line<'static>>,
+    /// Plain (Type 2) tags: the URL to write, and whether to protect it.
+    plain_url: String,
+    plain_protect: bool,
     master: String,
     meta: String,
     kek: String,
@@ -131,6 +139,8 @@ impl App {
             tap_ok: None,
             tap_lines: Vec::new(),
             write_lines: Vec::new(),
+            plain_url: String::new(),
+            plain_protect: false,
             master: String::new(),
             meta: std::env::var("DOORKEY_TAG_META_KEY").unwrap_or_default(),
             kek: std::env::var("DOORKEY_TAG_KEK").unwrap_or_default(),
@@ -400,6 +410,78 @@ impl App {
     }
 
     /// Irreversible. K2 and K3 first, verified by a real tap, then K0 last.
+    /// Write the URL to a plain (Type 2) tag, then protect it if asked.
+    fn write_plain(&mut self) {
+        let url = self.plain_url.trim().to_string();
+        let protect = self.plain_protect;
+        let master = (self.master.len() == 32).then(|| hex::decode(&self.master).ok()).flatten();
+        let Some(r) = self.reader.as_mut() else {
+            self.err("open a reader first");
+            return;
+        };
+        let res = (|| -> Result<Vec<String>> {
+            let w = t2write::write_ndef(r, &ndef::uri_record(&url), master.as_deref())?;
+            let mut done = vec![format!(
+                "wrote {} bytes to {}{}",
+                w.bytes,
+                hex::encode_upper(&w.uid),
+                if w.authenticated { " (unlocked with the derived password)" } else { "" }
+            )];
+            if protect {
+                let m = master.as_deref().ok_or_else(|| anyhow::anyhow!("protecting needs the master key"))?;
+                done.push(match t2write::protect(r, m)? {
+                    t2write::Protection::Changed => "write-protected from page 4 with the derived password".into(),
+                    t2write::Protection::AlreadySo => "already write-protected with this master".into(),
+                });
+            }
+            Ok(done)
+        })();
+        match res {
+            Ok(done) => {
+                self.write_lines = done
+                    .iter()
+                    .map(|d| Line::from(Span::styled(format!("✓ {d}"), Style::new().fg(theme::GOOD))))
+                    .collect();
+                for d in &done {
+                    self.ok(d);
+                }
+                // Show the result on the Tag tab too.
+                self.read_tag();
+            }
+            Err(e) => {
+                self.write_lines = vec![Line::from(Span::styled(format!("✗ {e}"), Style::new().fg(theme::BAD)))];
+                self.err(&format!("write: {e}"));
+            }
+        }
+    }
+
+    /// Remove a plain tag's write protection and restore its factory password.
+    fn unprotect_plain(&mut self) {
+        let Ok(master) = hex::decode(&self.master) else {
+            self.err("the master key is not valid hex");
+            return;
+        };
+        let Some(r) = self.reader.as_mut() else {
+            self.err("open a reader first");
+            return;
+        };
+        match t2write::unprotect(r, &master) {
+            Ok(p) => {
+                let msg = match p {
+                    t2write::Protection::Changed => "protection removed, factory password restored",
+                    t2write::Protection::AlreadySo => "not protected — nothing to do",
+                };
+                self.write_lines = vec![Line::from(Span::styled(format!("✓ {msg}"), Style::new().fg(theme::GOOD)))];
+                self.ok(msg);
+                self.read_tag();
+            }
+            Err(e) => {
+                self.write_lines = vec![Line::from(Span::styled(format!("✗ {e}"), Style::new().fg(theme::BAD)))];
+                self.err(&format!("unprotect: {e}"));
+            }
+        }
+    }
+
     fn change_keys(&mut self) {
         let (master_hex, meta_hex, kek_hex) =
             (self.master.clone(), self.meta.clone(), self.kek.clone());
@@ -598,6 +680,8 @@ impl App {
                     match p {
                         Pending::WriteUrl => self.write_url(),
                         Pending::ChangeKeys => self.change_keys(),
+                        Pending::WritePlain => self.write_plain(),
+                        Pending::UnprotectPlain => self.unprotect_plain(),
                     }
                 }
                 _ => {
@@ -643,6 +727,28 @@ impl App {
                     KeyCode::Char('e') => self.editing = Some(Field::Kek),
                     KeyCode::Char('u') => self.pending = Some(Pending::WriteUrl),
                     KeyCode::Char('K') => self.pending = Some(Pending::ChangeKeys),
+                    KeyCode::Char('p') => self.editing = Some(Field::PlainUrl),
+                    KeyCode::Char('x') => {
+                        self.plain_protect = !self.plain_protect;
+                        let state = if self.plain_protect { "on" } else { "off" };
+                        self.info(&format!("protect after writing: {state}"));
+                    }
+                    KeyCode::Char('w') => {
+                        if !self.plain_url.contains(':') {
+                            self.err("set a URL first ('p'), with its scheme, e.g. https://");
+                        } else if self.plain_protect && self.master.len() != 32 {
+                            self.err("protecting needs the master key ('m')");
+                        } else {
+                            self.pending = Some(Pending::WritePlain);
+                        }
+                    }
+                    KeyCode::Char('R') => {
+                        if self.master.len() != 32 {
+                            self.err("removing protection needs the master key ('m')");
+                        } else {
+                            self.pending = Some(Pending::UnprotectPlain);
+                        }
+                    }
                     _ => {}
                 },
                 4 => match code {
@@ -673,6 +779,7 @@ impl App {
             Field::Kek => &mut self.kek,
             Field::DbUrl => &mut self.db_url,
             Field::Label => &mut self.label,
+            Field::PlainUrl => &mut self.plain_url,
         }
     }
 
@@ -985,6 +1092,36 @@ impl App {
                 Span::styled(" change K2, K3, K0  ", Style::new().fg(theme::TEXT)),
                 Span::styled("locks to master", Style::new().fg(theme::BAD)),
             ]),
+            Line::from(""),
+            Line::from(Span::styled(" Plain tag (NTAG21x)", Style::new().fg(theme::DIM).add_modifier(Modifier::BOLD))),
+            field(
+                "p",
+                "URL",
+                if self.plain_url.is_empty() {
+                    Span::styled("—", Style::new().fg(theme::DIM))
+                } else {
+                    Span::styled(self.plain_url.clone(), Style::new().fg(theme::TEXT))
+                },
+            ),
+            field(
+                "x",
+                "protect",
+                if self.plain_protect {
+                    Span::styled("on — password from the master", Style::new().fg(theme::WARN))
+                } else {
+                    Span::styled("off", Style::new().fg(theme::DIM))
+                },
+            ),
+            Line::from(vec![
+                Span::styled(" w ", Style::new().bg(theme::FRAME).fg(theme::TEXT)),
+                Span::styled(" write URL  ", Style::new().fg(theme::TEXT)),
+                Span::styled("reversible", Style::new().fg(theme::GOOD)),
+            ]),
+            Line::from(vec![
+                Span::styled(" R ", Style::new().bg(theme::FRAME).fg(theme::TEXT)),
+                Span::styled(" remove protection  ", Style::new().fg(theme::TEXT)),
+                Span::styled("needs the master", Style::new().fg(theme::DIM)),
+            ]),
         ];
         f.render_widget(
             Paragraph::new(form).block(panel("Provision")).wrap(Wrap { trim: false }),
@@ -1016,6 +1153,32 @@ impl App {
                     Line::from(Span::styled(
                         "Reversible — the keys are untouched.",
                         Style::new().fg(theme::GOOD),
+                    )),
+                ],
+                theme::WARN,
+            ),
+            Pending::WritePlain => (
+                " Write plain tag ",
+                vec![
+                    Line::from(format!("Writes {} to this tag.", self.plain_url.trim())),
+                    if self.plain_protect {
+                        Line::from(Span::styled(
+                            "Then write-protects it: only your master can rewrite or unprotect it.",
+                            Style::new().fg(theme::WARN),
+                        ))
+                    } else {
+                        Line::from(Span::styled("Anyone can rewrite it afterwards.", Style::new().fg(theme::DIM)))
+                    },
+                ],
+                theme::WARN,
+            ),
+            Pending::UnprotectPlain => (
+                " Remove protection ",
+                vec![
+                    Line::from("Removes this plain tag's write protection."),
+                    Line::from(Span::styled(
+                        "Anyone can rewrite it afterwards.",
+                        Style::new().fg(theme::DIM),
                     )),
                 ],
                 theme::WARN,

@@ -152,6 +152,80 @@ fn tlv_len(b: &[u8]) -> Option<(usize, usize)> {
     }
 }
 
+/// What to write to user memory (from page 4) so it holds `msg`: the tag's
+/// leading lock/memory control TLVs kept byte for byte, then the NDEF TLV
+/// and a terminator, padded to whole pages.
+pub fn user_area_for(current: &[u8], capacity: usize, msg: &[u8]) -> Result<Vec<u8>, String> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while let Some(&t) = current.get(i) {
+        match t {
+            0x00 => i += 1,
+            0x01 | 0x02 => {
+                let (len, hdr) = tlv_len(&current[i + 1..]).ok_or("truncated control TLV")?;
+                let end = i + 1 + hdr + len;
+                out.extend_from_slice(current.get(i..end).ok_or("control TLV past the end")?);
+                i = end;
+            }
+            _ => break,
+        }
+    }
+    out.push(0x03);
+    if msg.len() < 0xFF {
+        out.push(msg.len() as u8);
+    } else {
+        out.push(0xFF);
+        out.extend_from_slice(&(msg.len() as u16).to_be_bytes());
+    }
+    out.extend_from_slice(msg);
+    out.push(0xFE);
+    if out.len() > capacity {
+        return Err(format!(
+            "needs {} bytes, the tag holds {capacity}",
+            out.len()
+        ));
+    }
+    out.resize(out.len().div_ceil(4) * 4, 0x00);
+    Ok(out)
+}
+
+/// Where an NTAG21x / Ultralight EV1 keeps its configuration. The layout
+/// follows from the capacity the CC advertises; unknown sizes get None, so
+/// protection is refused rather than written to a guessed page.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ConfigPages {
+    pub cfg0: u8,
+    pub cfg1: u8,
+    pub pwd: u8,
+    pub pack: u8,
+}
+
+pub fn config_pages(capacity: usize) -> Option<ConfigPages> {
+    let cfg0 = match capacity {
+        48 => 0x10,  // NTAG210, Ultralight EV1 MF0UL11
+        128 => 0x25, // NTAG212, Ultralight EV1 MF0UL21
+        144 => 0x29, // NTAG213 and compatible clones
+        496 => 0x83, // NTAG215
+        872 => 0xE3, // NTAG216
+        _ => return None,
+    };
+    Some(ConfigPages {
+        cfg0,
+        cfg1: cfg0 + 1,
+        pwd: cfg0 + 2,
+        pack: cfg0 + 3,
+    })
+}
+
+/// Protection starts at page 4: the NDEF message and everything after it
+/// need the password to write, the UID and CC stay as they are.
+pub const PROTECT_FROM: u8 = 0x04;
+
+/// AUTH0 (CFG0 byte 3) on a page that exists means writes need the password.
+pub fn write_protected(cfg0: &[u8; 4], pages: ConfigPages) -> bool {
+    cfg0[3] <= pages.pack
+}
+
 /// Labelled rows for the screen and for --probe.
 pub struct Summary {
     pub identity: Vec<(&'static str, String)>,
@@ -318,6 +392,52 @@ mod tests {
         // Pages 0-7 hold data; the all-zero rows after them are left out.
         assert_eq!(s.pages.len(), 2);
         assert_eq!(s.pages[1], "  4  0103A00C 340300FE 00000000 00000000");
+    }
+
+    #[test]
+    fn write_plan_keeps_the_lock_control_tlv() {
+        let msg = crate::ndef::uri_record("https://door.example.com/a/x?t=abc");
+        let area = user_area_for(&BLANK[16..], 144, &msg).unwrap();
+        assert_eq!(
+            &area[..5],
+            &[0x01, 0x03, 0xA0, 0x0C, 0x34],
+            "lock control kept"
+        );
+        assert_eq!(&area[5..7], &[0x03, msg.len() as u8]);
+        assert_eq!(area.len() % 4, 0, "whole pages");
+        assert_eq!(
+            content(&area),
+            Content::Records(vec!["URL  https://door.example.com/a/x?t=abc".into()])
+        );
+    }
+
+    #[test]
+    fn write_plan_limits() {
+        let long = crate::ndef::uri_record(&format!("https://example.com/{}", "x".repeat(300)));
+        assert_eq!(
+            user_area_for(&[], 144, &long),
+            Err(format!("needs {} bytes, the tag holds 144", long.len() + 5))
+        );
+        // 255 bytes and up use the three-byte TLV length
+        let area = user_area_for(&[], 496, &long).unwrap();
+        let [hi, lo] = (long.len() as u16).to_be_bytes();
+        assert_eq!(&area[..4], &[0x03, 0xFF, hi, lo]);
+        assert!(matches!(content(&area), Content::Records(_)));
+    }
+
+    #[test]
+    fn config_layout() {
+        let ntag213 = config_pages(144).unwrap();
+        assert_eq!(
+            (ntag213.cfg0, ntag213.cfg1, ntag213.pwd, ntag213.pack),
+            (0x29, 0x2A, 0x2B, 0x2C)
+        );
+        assert_eq!(config_pages(496).unwrap().cfg0, 0x83);
+        assert_eq!(config_pages(872).unwrap().pack, 0xE6);
+        assert_eq!(config_pages(100), None);
+        // Factory AUTH0 = FF: open. AUTH0 = 4: protected.
+        assert!(!write_protected(&[0, 0, 0, 0xFF], ntag213));
+        assert!(write_protected(&[0, 0, 0, PROTECT_FROM], ntag213));
     }
 
     #[test]

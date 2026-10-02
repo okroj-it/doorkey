@@ -9,6 +9,7 @@ mod db;
 mod ev2;
 mod ndef;
 mod nfc;
+mod t2write;
 mod type2;
 mod ui;
 
@@ -26,6 +27,14 @@ fn main() -> Result<()> {
     // which makes it usable over ssh and from a test run.
     if std::env::args().any(|a| a == "--probe") {
         return probe();
+    }
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(i) = args.iter().position(|a| a == "--write-url") {
+        let url = args.get(i + 1).ok_or_else(|| anyhow::anyhow!("--write-url needs a URL"))?;
+        return write_url(url, args.iter().any(|a| a == "--protect"));
+    }
+    if args.iter().any(|a| a == "--unprotect") {
+        return unprotect();
     }
     if std::env::args().any(|a| a == "--authcheck") {
         return authcheck();
@@ -48,6 +57,68 @@ fn main() -> Result<()> {
 }
 
 /// Read-only hardware check: enumerate, read the tag, verify a tap.
+/// DOORKEY_TAG_MASTER: the offline master, 32 hex chars. From the
+/// environment so it stays out of shell history and the process list.
+fn master_from_env() -> Result<Option<Vec<u8>>> {
+    match std::env::var("DOORKEY_TAG_MASTER") {
+        Ok(h) if h.len() == 32 => Ok(Some(hex::decode(h)?)),
+        Ok(_) => anyhow::bail!("DOORKEY_TAG_MASTER must be 32 hex chars"),
+        Err(_) => Ok(None),
+    }
+}
+
+fn open_first_reader() -> Result<nfc::Reader> {
+    let devices = nfc::list_devices()?;
+    nfc::Reader::open(devices.first().map(|s| s.as_str()))
+}
+
+fn print_type2(r: &mut nfc::Reader) -> Result<()> {
+    let t = r.select()?;
+    let d = r.read_type2()?;
+    let s = type2::summarise(&t.uid, d.version.as_deref(), &d.header, &d.user);
+    for (k, v) in s.identity.iter().filter(|(k, _)| matches!(*k, "UID" | "Model" | "Locks")) {
+        println!("  {k:<9} {v}");
+    }
+    for (i, line) in s.ndef.iter().enumerate() {
+        println!("  {:<9} {line}", if i == 0 { "NDEF" } else { "" });
+    }
+    Ok(())
+}
+
+/// Headless: write a URL to the Type 2 tag on the reader, optionally
+/// write-protecting it with the master-derived password.
+fn write_url(url: &str, protect: bool) -> Result<()> {
+    let master = master_from_env()?;
+    if protect && master.is_none() {
+        anyhow::bail!("--protect needs DOORKEY_TAG_MASTER");
+    }
+    let mut r = open_first_reader()?;
+    let w = t2write::write_ndef(&mut r, &ndef::uri_record(url), master.as_deref())?;
+    println!(
+        "  wrote {} bytes to {}{}",
+        w.bytes,
+        hex::encode_upper(&w.uid),
+        if w.authenticated { " (unlocked with the derived password)" } else { "" }
+    );
+    if let Some(m) = master.as_deref().filter(|_| protect) {
+        match t2write::protect(&mut r, m)? {
+            t2write::Protection::Changed => println!("  write-protected from page 4"),
+            t2write::Protection::AlreadySo => println!("  already write-protected with this master"),
+        }
+    }
+    print_type2(&mut r)
+}
+
+fn unprotect() -> Result<()> {
+    let master = master_from_env()?.ok_or_else(|| anyhow::anyhow!("--unprotect needs DOORKEY_TAG_MASTER"))?;
+    let mut r = open_first_reader()?;
+    match t2write::unprotect(&mut r, &master)? {
+        t2write::Protection::Changed => println!("  protection removed, factory password restored"),
+        t2write::Protection::AlreadySo => println!("  not protected — nothing to do"),
+    }
+    print_type2(&mut r)
+}
+
 fn probe() -> Result<()> {
     let devices = nfc::list_devices()?;
     println!("  readers: {devices:?}");

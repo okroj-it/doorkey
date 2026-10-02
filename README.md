@@ -143,14 +143,25 @@ flowchart TB
 
 **Provisioning** needs a PN532 reader. Two tools, same key scheme:
 
-- **`tools/tagtui`** — Rust TUI. Dry runs by default; reading and tapping never write. Writing the URL and changing keys sit behind explicit confirmation, ordered so a factory-K0 session can repair the tag until the very last step. Enrols the tag (UID, label, wrapped K3) straight into Postgres. It also reads plain NFC Type 2 tags (NTAG21x, Ultralight and compatible clones) without writing — model, capacity and locks, and every record of the NDEF message decoded: URLs, text, Smart Posters, Wi-Fi networks (key masked), contacts, Bluetooth pairing, Android app records and the handover/signature types. DNA-only actions refuse them.
+- **`tools/tagtui`** — Rust TUI. Dry runs by default; reading and tapping never write. Writing the URL and changing keys sit behind explicit confirmation, ordered so a factory-K0 session can repair the tag until the very last step. Enrols the tag (UID, label, wrapped K3) straight into Postgres. It also reads plain NFC Type 2 tags (NTAG21x, Ultralight and compatible clones) without writing — model, capacity and locks, and every record of the NDEF message decoded: URLs, text, Smart Posters, Wi-Fi networks (key masked), contacts, Bluetooth pairing, Android app records and the handover/signature types. DNA-only actions refuse them. It also writes URLs to them, optionally password write-protected (see below).
 - **`tools/provision.py`** — a staged CLI: `--check` (auth only, writes nothing), `--write-url`, then `--keys` (irreversible: locks the tag to your master).
 
 Both take your public origin (`--origin` or `DOORKEY_ORIGIN`, e.g. `https://door.example.com`) and write `<host>/k/sun?picc=…&cmac=…`. That one URL serves every tag.
 
 ### Plain tags (`static`, and action tokens)
 
-With NFC Tools, write the URL as a URL record, then **write-protect it** (Other → Set password, leave `PROT=0` so it stays readable), or use the static lock bytes to make it permanently read-only.
+Write the URL with `tagtui` and **write-protect it**. The password is derived from your offline master and the tag's UID, so every tag gets its own and there is nothing to remember: `tagtui` can rewrite or unprotect any tag you protected, and nobody without the master can. Reads stay open, so phones still see the URL.
+
+```sh
+export DOORKEY_TAG_MASTER=<32 hex, from your password manager>   # e.g. read -s, not in history
+tagtui --write-url "https://door.example.com/a/garage?t=…" --protect
+tagtui --unprotect                                              # back to factory password
+```
+
+The same is on the TUI's Write tab (`p` URL, `x` protect, `w` write, `R` remove protection). It works on NTAG210/212/213/215/216, Ultralight EV1 and NTAG213-compatible clones; every write is verified by reading back. NFC Tools works too (Other → Set password, leave `PROT=0`), or the static lock bytes make a tag permanently read-only.
+
+> [!NOTE]
+> NTAG21x passwords are 32 bits and travel in clear over the air: they stop a passer-by with a phone app, not someone sniffing the tag while you rewrite it.
 
 > [!WARNING]
 > An unprotected NTAG213 on the outside of your door can be rewritten by any passer-by in two seconds — point it at a lookalike domain, and the next person to tap types a valid code into someone else's page. The lockout ladder does nothing against that, because the code they capture is correct. (Passkeys are immune: they will not sign for a lookalike origin.)

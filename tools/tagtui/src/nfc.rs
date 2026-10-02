@@ -143,6 +143,16 @@ impl Reader {
             .ok_or_else(|| anyhow!("READ page {page}: short response ({} bytes)", r.len()))
     }
 
+    /// A Type 2 command as a raw frame (InCommunicateThru). The PN532 still
+    /// adds and checks the CRC. Needed for the NTAG commands the firmware's
+    /// InDataExchange misreads as MIFARE Classic ones.
+    fn t2_raw(&mut self, cmd: &[u8], max_rx: usize) -> Result<Vec<u8>> {
+        self.dev.set_property_bool(Property::EasyFraming, false).ok();
+        let r = self.dev.initiator_transceive_bytes(cmd, max_rx, Timeout::Default);
+        self.dev.set_property_bool(Property::EasyFraming, true).ok();
+        r.map_err(|e| anyhow!("raw {:02X}: {e:?}", cmd.first().copied().unwrap_or(0)))
+    }
+
     /// Type 2 GET_VERSION (0x60). None when the chip does not answer it, as
     /// the original Ultralight does not. The failed command halts the tag,
     /// so it is re-selected before returning.
@@ -151,16 +161,41 @@ impl Reader {
     /// InDataExchange, which takes 0x60 for a MIFARE Classic authentication
     /// and never sends it, so even a genuine NTAG21x looked silent.
     pub fn t2_version(&mut self) -> Option<Vec<u8>> {
-        self.dev.set_property_bool(Property::EasyFraming, false).ok();
-        let r = self.dev.initiator_transceive_bytes(&[0x60], 8, Timeout::Default);
-        self.dev.set_property_bool(Property::EasyFraming, true).ok();
-        match r {
+        match self.t2_raw(&[0x60], 8) {
             Ok(v) if v.len() >= 8 => Some(v),
             _ => {
                 self.select().ok();
                 None
             }
         }
+    }
+
+    /// Type 2 PWD_AUTH (0x1B), as a raw frame. Returns the PACK the tag
+    /// answers with. A wrong password gets no answer and halts the tag, so it
+    /// is re-selected before the error is returned.
+    pub fn t2_auth(&mut self, pwd: [u8; 4]) -> Result<[u8; 2]> {
+        match self.t2_raw(&[0x1B, pwd[0], pwd[1], pwd[2], pwd[3]], 2) {
+            Ok(r) if r.len() >= 2 => Ok([r[0], r[1]]),
+            _ => {
+                self.select().ok();
+                bail!("PWD_AUTH refused")
+            }
+        }
+    }
+
+    /// Type 2 WRITE (0xA2): one page. Ok does NOT mean the page changed:
+    /// genuine NXP chips answer a refused write (protected or locked page)
+    /// with a 4-bit NAK that the PN532 reports like the ACK, while clones stay
+    /// silent and get an error. Callers verify by reading back.
+    pub fn t2_write(&mut self, page: u8, data: [u8; 4]) -> Result<()> {
+        let cmd = [0xA2, page, data[0], data[1], data[2], data[3]];
+        self.dev
+            .initiator_transceive_bytes(&cmd, 1, Timeout::Default)
+            .map(|_| ())
+            .map_err(|e| {
+                self.select().ok();
+                anyhow!("WRITE page {page:#04X} refused: {e:?}")
+            })
     }
 
     /// Everything a Type 2 tag shows without authentication or writes.
@@ -448,6 +483,14 @@ pub fn derive_key(master: &[u8], label: u8, uid: &[u8]) -> [u8; 16] {
     ev2::cmac_aes(master, &msg)
 }
 
+/// Password and PACK for write-protecting a Type 2 tag, from the offline
+/// master: every tag gets its own, nothing is stored, and only someone with
+/// the master can unprotect it. Label 0x10 keeps it apart from the DNA keys.
+pub fn tag_password(master: &[u8], uid: &[u8]) -> ([u8; 4], [u8; 2]) {
+    let k = derive_key(master, 0x10, uid);
+    ([k[0], k[1], k[2], k[3]], [k[4], k[5]])
+}
+
 /// The URL the chip emits, minus the https:// that NDEF abbreviates, for
 /// doorkey's public origin in DOORKEY_ORIGIN. Every tag carries the same
 /// /k/sun URL; whether a tap opens the keypad or an action is decided by
@@ -564,6 +607,20 @@ mod tests {
 
     /// Same length as the origin the 32/70 offsets above were measured on.
     const ORIGIN: &str = "https://door.test.xyz";
+
+    #[test]
+    fn tag_passwords_are_per_tag() {
+        let master = [0x42u8; 16];
+        let a = tag_password(&master, &[0x04, 0xB8, 0x5A, 0x11, 0xBB, 0x2A, 0x81]);
+        let b = tag_password(&master, &[0x1D, 0x4F, 0x4E, 0x06, 0x0C, 0x10, 0x80]);
+        assert_eq!(a, tag_password(&master, &[0x04, 0xB8, 0x5A, 0x11, 0xBB, 0x2A, 0x81]), "deterministic");
+        assert_ne!(a, b, "different tags, different passwords");
+        assert_ne!(a.0, [0xFF; 4], "never the factory password");
+        // Not the K0 or K3 of the same tag
+        let uid = [0x04, 0xB8, 0x5A, 0x11, 0xBB, 0x2A, 0x81];
+        assert_ne!(&derive_key(&master, 0x00, &uid)[..4], &a.0);
+        assert_ne!(&derive_key(&master, 0x03, &uid)[..4], &a.0);
+    }
 
     #[test]
     fn template_from_origin() {
