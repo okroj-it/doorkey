@@ -396,6 +396,8 @@ admin.delete("/api/actions/:id/roles/:role", async (c) => {
   return c.json({ ok: true });
 });
 
+admin.get("/api/tags", async (c) => c.json(await db.listTags()));
+
 admin.post("/api/tags", async (c) => {
   const b = await body<{ code: string; label: string }>(c);
   if (typeof b.code !== "string" || !b.code.trim()) return c.json({ error: "paste the tag code" }, 400);

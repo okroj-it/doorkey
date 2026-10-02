@@ -17,6 +17,9 @@
   let attempts = $state([]);
   let events = $state([]);
   let credentials = $state([]);
+  let tags = $state([]);
+  let tagForm = $state({ code: '', label: '' });
+  let tagNote = $state('');
 
   // Shown once, right after creation — the only time the plaintext exists.
   let freshCode = $state(null);
@@ -36,10 +39,10 @@
   }
 
   async function refresh() {
-    const [c, s, l, k] = await Promise.all([
-      api('/codes'), api('/status'), api('/log?limit=40'), api('/credentials'),
+    const [c, s, l, k, t] = await Promise.all([
+      api('/codes'), api('/status'), api('/log?limit=40'), api('/credentials'), api('/tags'),
     ]);
-    codes = c; status = s; attempts = l.attempts; events = l.events; credentials = k;
+    codes = c; status = s; attempts = l.attempts; events = l.events; credentials = k; tags = t;
   }
 
   async function boot() {
@@ -108,6 +111,28 @@
       });
       freshCode = out;
       form = { label: '', validUntil: '', maxUses: '', digits: 6 };
+      await refresh();
+    } catch (e) { error = e.message; } finally { busy = false; }
+  }
+
+  async function enrolTag(event) {
+    event.preventDefault();
+    busy = true; error = ''; tagNote = '';
+    try {
+      const t = await api('/tags', {
+        method: 'POST',
+        body: JSON.stringify({ code: tagForm.code, label: tagForm.label || undefined }),
+      });
+      tagNote = `${t.label} ${t.replaced ? 're-enrolled' : 'enrolled'} — it opens the door until linked to an action.`;
+      tagForm = { code: '', label: '' };
+      await refresh();
+    } catch (e) { error = e.message; } finally { busy = false; }
+  }
+
+  async function setTagActive(uid, active) {
+    busy = true;
+    try {
+      await api(`/tags/${uid}`, { method: 'PATCH', body: JSON.stringify({ active }) });
       await refresh();
     } catch (e) { error = e.message; } finally { busy = false; }
   }
@@ -312,6 +337,44 @@
     </section>
 
     <section>
+      <h2>DNA tags</h2>
+      <table>
+        <thead>
+          <tr><th>Tag</th><th>Opens</th><th>State</th><th>Last used</th><th></th></tr>
+        </thead>
+        <tbody>
+          {#each tags as t (t.uid)}
+            <tr class:dim={!t.active}>
+              <td>{t.label} <span class="muted mono small">{t.uid}</span></td>
+              <td>{t.action ? `action ${t.action}` : 'the door'}</td>
+              <td><span class="pill {t.active ? 'active' : 'revoked'}">{t.active ? 'active' : 'disabled'}</span></td>
+              <td class="muted">{fmt(t.last_used_at)}</td>
+              <td>
+                <div class="actions">
+                  <button class="link" class:bad={t.active} onclick={() => setTagActive(t.uid, !t.active)} disabled={busy}>
+                    {t.active ? 'disable' : 'enable'}
+                  </button>
+                </div>
+              </td>
+            </tr>
+          {:else}
+            <tr><td colspan="5" class="muted">No tags yet.</td></tr>
+          {/each}
+        </tbody>
+      </table>
+      <form onsubmit={enrolTag} aria-label="Enrol tag" class="tag-form">
+        <label class="wide">Tag code <input bind:value={tagForm.code} placeholder="dktag1.…" required /></label>
+        <label>Label <input bind:value={tagForm.label} placeholder="from the code" /></label>
+        <button class="primary" disabled={busy}>Enrol</button>
+      </form>
+      {#if tagNote}<p class="ok small">{tagNote}</p>{/if}
+      <p class="muted small">
+        tagtui and <code>provision.py</code> print a tag code after provisioning. It holds the tag's key only
+        wrapped with your KEK, and is refused unless this server's KEK opens it.
+      </p>
+    </section>
+
+    <section>
       <h2>Door activity</h2>
       <table>
         <tbody>
@@ -450,6 +513,9 @@
   .pill.revoked, .pill.expired, .pill.locked { color: var(--bad); border-color: #5a2b2b; }
 
   .muted { color: var(--dim); }
+  .tag-form { margin-top: 1rem; }
+  .tag-form .wide { flex: 1; min-width: min(100%, 24rem); }
+  .tag-form .wide input { width: 100%; box-sizing: border-box; font-variant-numeric: tabular-nums; }
   .small { font-size: .8rem; }
   .mono { font-variant-numeric: tabular-nums; }
   .ok { color: var(--ok); }
