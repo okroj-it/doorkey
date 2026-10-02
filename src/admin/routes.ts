@@ -1,5 +1,6 @@
 import { Hono, type Context } from "hono";
 import { randomBytes } from "node:crypto";
+import { isAppMode } from "../app-mode.ts";
 import { config } from "../config.ts";
 import { generateCode, hashCode } from "../codes.ts";
 import { hashToken, newToken } from "../actions/policy.ts";
@@ -9,6 +10,7 @@ import { constraintKind } from "../db-values.ts";
 import * as ha from "../ha.ts";
 import * as lockout from "../lockout.ts";
 import { publishState } from "../unlock.ts";
+import { haAdmin } from "./ha-users.ts";
 import * as session from "./session.ts";
 import * as webauthn from "./webauthn.ts";
 
@@ -47,6 +49,40 @@ async function page(c: Context) {
 
 // The shell carries no data. Everything it shows comes from /admin/api/*,
 // which requires the passkey session.
+// --- as a Home Assistant app ------------------------------------------------
+//
+// This router then only runs on the Ingress listener, and HA's login is the
+// admin login: passkey sign-in and enrolment do not exist, and every API call
+// is checked against the HA user the Supervisor names. Registered before any
+// route, so nothing below can be reached around it.
+
+const APP_MODE = isAppMode();
+
+function ingressUser(c: Context): string {
+  return c.req.header("X-Remote-User-Display-Name") || c.req.header("X-Remote-User-Name") || "Home Assistant";
+}
+
+if (APP_MODE) {
+  admin.use("*", async (c, next) => {
+    const path = c.req.path;
+    if (
+      path.startsWith("/admin/enroll/") ||
+      path.startsWith("/admin/api/auth/") ||
+      path.startsWith("/admin/api/enroll/") ||
+      path === "/admin/api/logout"
+    ) {
+      return c.notFound();
+    }
+    if (!path.startsWith("/admin/api/")) return next(); // the page shell carries no data
+    const id = c.req.header("X-Remote-User-Id");
+    if (!id) return c.json({ error: "unauthenticated" }, 401);
+    const verdict = await haAdmin(id, c.req.header("X-Remote-User-Name"));
+    if (!verdict.ok) return c.json({ error: verdict.reason }, 403);
+    c.set("adminLabel" as never, ingressUser(c) as never);
+    return next();
+  });
+}
+
 admin.get("/", page);
 admin.get("/enroll/:token", page);
 
@@ -122,6 +158,7 @@ admin.post("/api/logout", (c) => {
 // --- everything below requires a passkey session ---------------------------
 
 admin.use("/api/*", async (c, next) => {
+  if (APP_MODE) return next(); // authenticated above, by Home Assistant
   const path = c.req.path;
   if (path.startsWith("/admin/api/auth/") || path.startsWith("/admin/api/enroll/")) {
     return next();
@@ -133,6 +170,7 @@ admin.use("/api/*", async (c, next) => {
 });
 
 admin.get("/api/session", (c) => {
+  if (APP_MODE) return c.json({ label: ingressUser(c), via: "home-assistant" });
   const label = session.verify(cookie(c.req.header("Cookie"), session.COOKIE));
   return label ? c.json({ label }) : c.json({ error: "unauthenticated" }, 401);
 });
