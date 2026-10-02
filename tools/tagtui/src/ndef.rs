@@ -79,6 +79,7 @@ pub fn describe(r: &Record) -> String {
         }
         (0x01, b"T") if !p.is_empty() => text(p),
         (0x01, b"Sp") => smart_poster(p),
+        (0x01, t) => well_known(t, p),
         (0x00, _) => "empty record".into(),
         (0x02, b"application/vnd.wfa.wsc") => wifi(p),
         (0x02, b"text/vcard" | b"text/x-vcard") => vcard(&String::from_utf8_lossy(p)),
@@ -251,6 +252,38 @@ fn bluetooth_le(p: &[u8]) -> String {
         _ => "",
     };
     format!("Bluetooth LE  {addr}{}{role}", bt_name(&ad))
+}
+
+/// The remaining NFC Forum well-known types, named. Connection Handover
+/// records usually come with the carrier's own record (Wi-Fi, Bluetooth)
+/// next to them in the same message, which is decoded on its own line.
+fn well_known(t: &[u8], p: &[u8]) -> String {
+    let version = |b: Option<&u8>| b.map_or(String::new(), |v| format!(" v{}.{}", v >> 4, v & 0x0F));
+    match t {
+        b"Hs" => format!("connection handover select{}", version(p.first())),
+        b"Hr" => format!("connection handover request{}", version(p.first())),
+        b"Hm" => format!("connection handover mediation{}", version(p.first())),
+        b"Hi" => format!("connection handover initiate{}", version(p.first())),
+        b"Hc" => {
+            // CTF (1), carrier type length (1), carrier type
+            let len = p.get(1).copied().unwrap_or(0) as usize;
+            let carrier = p.get(2..2 + len).map_or("?".into(), |c| String::from_utf8_lossy(c).into_owned());
+            format!("handover carrier  {carrier}")
+        }
+        b"ac" => {
+            let state = match p.first().map(|b| b & 0x03) {
+                Some(0) => "inactive",
+                Some(1) => "active",
+                Some(2) => "activating",
+                _ => "unknown",
+            };
+            format!("alternative carrier ({state})")
+        }
+        b"cr" => "handover collision resolution".into(),
+        b"Sig" => format!("signature record{}", p.first().map_or(String::new(), |v| format!(" v{v}"))),
+        b"Di" => "device information".into(),
+        _ => format!("well-known type {}, {} bytes", String::from_utf8_lossy(t), p.len()),
+    }
 }
 
 /// MIME-typed record. Text types are shown; anything else is named.
@@ -523,6 +556,17 @@ mod tests {
             describe(&rec(1, b"Sp", &inner)),
             "smart poster  https://x.example  \"Hi\" [en]  \"Cze\" [pl]  action: save  size 1024 bytes"
         );
+    }
+
+    #[test]
+    fn other_well_known_types() {
+        assert_eq!(describe(&rec(1, b"Hs", &[0x13])), "connection handover select v1.3");
+        assert_eq!(describe(&rec(1, b"Hr", &[0x12, 0xAB])), "connection handover request v1.2");
+        let carrier = [0x02, 0x0A, b'w', b'i', b'f', b'i', b'.', b'o', b'r', b'g', b'/', b'x'];
+        assert_eq!(describe(&rec(1, b"Hc", &carrier)), "handover carrier  wifi.org/x");
+        assert_eq!(describe(&rec(1, b"ac", &[0x01, 0x01, b'0', 0x00])), "alternative carrier (active)");
+        assert_eq!(describe(&rec(1, b"Sig", &[0x02])), "signature record v2");
+        assert_eq!(describe(&rec(1, b"Xy", &[1, 2, 3])), "well-known type Xy, 3 bytes");
     }
 
     #[test]
