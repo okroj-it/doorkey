@@ -14,6 +14,7 @@
   <img alt="Home Assistant" src="https://img.shields.io/badge/Home_Assistant-REST_+_MQTT-18bcf2?logo=homeassistant&logoColor=white&style=flat-square">
   <img alt="Docker, Podman or Kubernetes" src="https://img.shields.io/badge/runs_on-Docker_·_Podman_·_Kubernetes-2496ed?logo=docker&logoColor=white&style=flat-square">
   <img alt="English and Polish" src="https://img.shields.io/badge/UI-English_·_Polski-8a90a0?style=flat-square">
+  <img alt="MIT license" src="https://img.shields.io/badge/license-MIT-eef1f7?style=flat-square">
 </p>
 
 <p align="center">
@@ -512,3 +513,7 @@ deploy/               compose (with Postgres) · kubernetes
 - [ ] **Home Assistant add-on** — install from an add-on repository; HA access through the Supervisor (no long-lived token), MQTT credentials from the MQTT integration, settings as add-on options, admin in the HA sidebar via Ingress using HA's own login, multi-arch images (amd64 · aarch64).
 - [ ] **SQLite** — a zero-dependency database for the add-on and small compose installs, next to PostgreSQL.
 - [ ] **More languages** for the phone pages — strings live in [`web/src/i18n.js`](web/src/i18n.js).
+
+## 📄 License
+
+[MIT](LICENSE)
