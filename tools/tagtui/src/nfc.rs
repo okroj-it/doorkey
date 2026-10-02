@@ -455,6 +455,14 @@ pub fn derive_key(master: &[u8], label: u8, uid: &[u8]) -> [u8; 16] {
     ev2::cmac_aes(master, &msg)
 }
 
+/// Password and PACK for write-protecting a Type 2 tag, from the offline
+/// master: every tag gets its own, nothing is stored, and only someone with
+/// the master can unprotect it. Label 0x10 keeps it apart from the DNA keys.
+pub fn tag_password(master: &[u8], uid: &[u8]) -> ([u8; 4], [u8; 2]) {
+    let k = derive_key(master, 0x10, uid);
+    ([k[0], k[1], k[2], k[3]], [k[4], k[5]])
+}
+
 /// The URL the chip emits, minus the https:// that NDEF abbreviates, for
 /// doorkey's public origin in DOORKEY_ORIGIN. Every tag carries the same
 /// /k/sun URL; whether a tap opens the keypad or an action is decided by
@@ -571,6 +579,20 @@ mod tests {
 
     /// Same length as the origin the 32/70 offsets above were measured on.
     const ORIGIN: &str = "https://door.test.xyz";
+
+    #[test]
+    fn tag_passwords_are_per_tag() {
+        let master = [0x42u8; 16];
+        let a = tag_password(&master, &[0x04, 0xB8, 0x5A, 0x11, 0xBB, 0x2A, 0x81]);
+        let b = tag_password(&master, &[0x1D, 0x4F, 0x4E, 0x06, 0x0C, 0x10, 0x80]);
+        assert_eq!(a, tag_password(&master, &[0x04, 0xB8, 0x5A, 0x11, 0xBB, 0x2A, 0x81]), "deterministic");
+        assert_ne!(a, b, "different tags, different passwords");
+        assert_ne!(a.0, [0xFF; 4], "never the factory password");
+        // Not the K0 or K3 of the same tag
+        let uid = [0x04, 0xB8, 0x5A, 0x11, 0xBB, 0x2A, 0x81];
+        assert_ne!(&derive_key(&master, 0x00, &uid)[..4], &a.0);
+        assert_ne!(&derive_key(&master, 0x03, &uid)[..4], &a.0);
+    }
 
     #[test]
     fn template_from_origin() {
