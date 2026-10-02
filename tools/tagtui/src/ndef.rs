@@ -78,12 +78,34 @@ pub fn describe(r: &Record) -> String {
             format!("URL  {}{}", uri_prefix(p[0]), String::from_utf8_lossy(&p[1..]))
         }
         (0x01, b"T") if !p.is_empty() => text(p),
+        (0x00, _) => "empty record".into(),
+        (0x02, t) => mime(&String::from_utf8_lossy(t), p),
+        (0x03, t) => format!("URI  {}", String::from_utf8_lossy(t)),
+        (0x04, b"android.com:pkg") => {
+            format!("Android app  {}", String::from_utf8_lossy(p))
+        }
+        (0x04, t) => format!(
+            "external type {}, {} bytes",
+            String::from_utf8_lossy(t),
+            p.len()
+        ),
+        (0x05, _) => format!("unknown-type record, {} bytes", p.len()),
         _ => format!(
             "record TNF {}, type {:?}, {} bytes",
             r.tnf,
             String::from_utf8_lossy(&r.record_type),
             p.len()
         ),
+    }
+}
+
+/// MIME-typed record. Text types are shown; anything else is named.
+fn mime(media_type: &str, p: &[u8]) -> String {
+    match std::str::from_utf8(p) {
+        Ok(t) if media_type.starts_with("text/") && !t.contains('\0') => {
+            format!("{media_type}  {}", t.trim())
+        }
+        _ => format!("{media_type}, {} bytes", p.len()),
     }
 }
 
@@ -209,6 +231,27 @@ mod tests {
     #[test]
     fn chunked_records_are_refused() {
         assert_eq!(records(&[0xB1, 0x01, 0x01, b'U', 0x04]), Err("chunked records are not supported"));
+    }
+
+    fn rec(tnf: u8, record_type: &[u8], payload: &[u8]) -> Record {
+        Record {
+            tnf,
+            record_type: record_type.to_vec(),
+            payload: payload.to_vec(),
+            last: true,
+            chunked: false,
+        }
+    }
+
+    #[test]
+    fn record_kinds() {
+        assert_eq!(describe(&rec(0, b"", b"")), "empty record");
+        assert_eq!(describe(&rec(3, b"https://x.example/", b"")), "URI  https://x.example/");
+        assert_eq!(describe(&rec(4, b"android.com:pkg", b"com.example.app")), "Android app  com.example.app");
+        assert_eq!(describe(&rec(4, b"example.com:thing", b"abc")), "external type example.com:thing, 3 bytes");
+        assert_eq!(describe(&rec(5, b"", b"ab")), "unknown-type record, 2 bytes");
+        assert_eq!(describe(&rec(2, b"text/plain", b"hello\n")), "text/plain  hello");
+        assert_eq!(describe(&rec(2, b"image/png", &[0x89, b'P'])), "image/png, 2 bytes");
     }
 
     #[test]

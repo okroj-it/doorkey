@@ -285,7 +285,7 @@ mod tests {
         let mime = [0x03, 0x06, 0xD2, 0x01, 0x02, b'x', 0xAA, 0xBB, 0xFE];
         assert_eq!(
             content(&mime),
-            Content::Records(vec![r#"record TNF 2, type "x", 2 bytes"#.into()])
+            Content::Records(vec!["x, 2 bytes".into()])
         );
     }
 
