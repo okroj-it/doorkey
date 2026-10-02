@@ -10,7 +10,9 @@
  * Expects doorkey on TEST_ORIGIN with DOORKEY_RP_ID=localhost, HA_URL pointing
  * at the fake HA, and an empty database apart from that admin enrolment.
  */
+import { createCipheriv, randomBytes } from "node:crypto";
 import puppeteer, { type Page } from "puppeteer-core";
+import { encodeTagCode } from "../src/tag-code.ts";
 
 const ORIGIN = process.env.TEST_ORIGIN ?? "http://localhost:18080";
 const FAKE_HA = process.env.TEST_FAKE_HA ?? "http://127.0.0.1:18123";
@@ -42,6 +44,15 @@ const browser = await puppeteer.launch({
 
 /** Answers prompt() with the next queued answer and accepts every confirm(). */
 const answers: string[] = [];
+
+/** A tag code for a made-up tag, wrapped with the server's KEK as tagtui would. */
+function tagCode(uidHex: string, label: string): string {
+  const kek = Buffer.from(process.env.DOORKEY_TAG_KEK ?? "", "hex");
+  const nonce = randomBytes(12);
+  const c = createCipheriv("aes-256-gcm", kek, nonce);
+  const wrapped = Buffer.concat([nonce, c.update(randomBytes(16)), c.final(), c.getAuthTag()]);
+  return encodeTagCode({ uid: Buffer.from(uidHex, "hex"), wrapped, label });
+}
 
 async function phone(): Promise<Page> {
   const page = await browser.newPage();
@@ -144,6 +155,33 @@ try {
   await admin.click("button.primary");
   check("admin passkey enrolled", await waitText(admin, "New code"));
 
+  // --- DNA tags on the Door tab ---------------------------------------------
+  const codeInput = 'form[aria-label="Enrol tag"] input[required]';
+  await admin.type(codeInput, "dktag1.nonsense");
+  await admin.click('form[aria-label="Enrol tag"] button.primary');
+  check("a malformed tag code is refused with its reason", await waitText(admin, "four parts"));
+  await admin.$eval(codeInput, (el) => {
+    (el as HTMLInputElement).value = "";
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await admin.type(codeInput, tagCode("04aabbccddeeff", "Garage"));
+  await admin.click('form[aria-label="Enrol tag"] button.primary');
+  check("a tag code enrols the tag", await waitText(admin, "Garage enrolled"));
+  check("the tag is listed with its UID", await waitText(admin, "04aabbccddeeff"));
+  const tagRowIs = (state: string) =>
+    admin
+      .waitForFunction(
+        (st) => [...document.querySelectorAll("tr")].some((r) =>
+          r.textContent?.includes("04aabbccddeeff") && r.querySelector(".pill")?.textContent === st),
+        { timeout: 15000 },
+        state,
+      )
+      .then(() => true, () => false);
+  await press(admin, "disable");
+  check("a tag can be disabled", await tagRowIs("disabled"));
+  await press(admin, "enable");
+  check("and enabled again", await tagRowIs("active"));
+
   await admin.click("nav.tabs button:nth-child(2)");
   check("the Actions tab opens", await waitText(admin, "No actions yet."));
   check(
@@ -191,6 +229,17 @@ try {
     await waitGone(admin, "nobody may run it"),
   );
 
+  // --- link the DNA tag enrolled on the Door tab ------------------------------
+  await admin.select('select[aria-label="Link a DNA tag"]', "04aabbccddeeff");
+  // The chip, not the label: "Garage" is already in the picker's options.
+  check(
+    "the tag links to the action",
+    await admin.waitForSelector('button[aria-label="unlink Garage"]:not([disabled])', { timeout: 15000 }).then(
+      () => true,
+      () => false,
+    ),
+  );
+
   // --- plain tag URL ---------------------------------------------------------
   await press(admin, "issue URL");
   const tagUrl = await shownUrl(admin);
@@ -205,8 +254,11 @@ try {
   await admin.click('form[aria-label="New user"] button.primary');
   check("the user card appears", await waitText(admin, "none yet"));
   await typeRole(admin, 1, "owner");
-  await admin.waitForFunction(
-    () => document.querySelectorAll(".chip").length >= 2,
+  // The user's own card, not any chip: the action card already has two.
+  await admin.waitForFunction(() =>
+    [...document.querySelectorAll("article")].some(
+      (a) => a.textContent?.includes("ola") && [...a.querySelectorAll(".chip")].some((c) => c.textContent?.includes("owner")),
+    ),
   );
 
   answers.push("pixel");
@@ -279,6 +331,14 @@ try {
     await waitText(admin, "none yet"),
   );
 
+  await admin.click('button[aria-label="unlink Garage"]');
+  check("unlinking the tag frees the action for deletion", await admin
+    .waitForFunction(() => {
+      const b = [...document.querySelectorAll("button")].find((x) => x.textContent?.trim() === "delete");
+      return b && !(b as HTMLButtonElement).disabled;
+    }, { timeout: 15000 })
+    .then(() => true, () => false));
+
   await press(admin, "delete");
   check(
     "deleting the action removes its card",
@@ -304,6 +364,11 @@ try {
       "action_updated",
       "action_passkey_removed",
       "action_deleted",
+      "tag_enrolled",
+      "tag_disabled",
+      "tag_enabled",
+      "tag_to_action",
+      "tag_to_door",
     ].every((e) => seen.has(e)),
   );
 } catch (err) {
