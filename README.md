@@ -259,7 +259,7 @@ dk() { docker exec doorkey bun cli/doorkey.ts "$@"; }   # or kubectl exec … / 
 
 dk user:add alex
 dk user:grant alex owner
-dk user:enroll alex pixel            # single-use link, 15 min: open it on the phone
+dk user:enroll alex pixel            # single-use link, 15 min: open it on the phone (the Actions tab also shows it as a QR code)
 
 dk action:add garage script.garage_open --label "Open the garage"
 dk action:allow garage owner
@@ -310,7 +310,7 @@ action:log [--tail 40]
 
 **Door tab:** create codes (plaintext shown once), set or change expiry, cap uses, revoke, re-enable, regenerate and delete; clear a lockout; review the door and admin audit logs; manage the admin passkeys; list, enable/disable and enrol DNA tags.
 
-**Actions tab:** create actions from a live list of your HA scripts; toggle *DNA required*, *home-only* and *active*; issue or rotate a plain-tag URL (shown once, with copy); link or unlink provisioned DNA tags; allow roles. Create and disable action users, grant roles, mint single-use enrolment links, and see and remove each user's passkeys. Unused roles can be deleted. Every change is in the admin activity log.
+**Actions tab:** create actions from a live list of your HA scripts; toggle *DNA required*, *home-only* and *active*; issue or rotate a plain-tag URL (shown once, with copy); link or unlink provisioned DNA tags; allow roles. Create and disable action users, grant roles, mint single-use enrolment links (shown once, also as a QR code to scan with the phone that will hold the passkey), and see and remove each user's passkeys. Unused roles can be deleted. Every change is in the admin activity log.
 
 > [!NOTE]
 > An admin passkey can mint enrolment links for action users. That is no wider than admin already is — it can create door codes. Admin passkeys themselves are still only ever enrolled from the CLI, so `kubectl` remains the root of trust.
