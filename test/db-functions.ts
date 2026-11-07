@@ -167,6 +167,33 @@ try {
   );
 }
 
+// --- last entry: codes and fingerprint unlocks ------------------------------
+
+const doorAction = await db.insertAction("db-door", "Front door", null, false, false);
+const opener = await db.insertActionUser("db-opener");
+const ranDoor = () =>
+  db.logActionEvent({
+    result: "ran",
+    actionId: doorAction,
+    userId: opener,
+    via: "token",
+    tagId: null,
+    srcIp: null,
+    userAgent: null,
+  });
+
+await db.logAttempt("granted", code, null, null);
+await Bun.sleep(20);
+await ranDoor();
+const afterFingerprint = await db.lastGrant();
+check(
+  "a newer fingerprint unlock is the last entry",
+  afterFingerprint?.label === "db-opener (fingerprint)" && afterFingerprint.ts instanceof Date,
+);
+await Bun.sleep(20);
+await db.logAttempt("granted", code, null, null);
+check("a newer code entry is the last entry again", (await db.lastGrant())?.label === "db-functions");
+
 // --- tag enrolment from a tag code -----------------------------------------
 
 const k3 = new Uint8Array(16).fill(7);

@@ -171,13 +171,25 @@ export async function failuresSince(since: Date): Promise<number> {
   return rows[0]?.n ?? 0;
 }
 
+/**
+ * The latest way in: a granted code (its label) or a fingerprint unlock
+ * through the door action ("<user> (fingerprint)"), whichever is newer.
+ */
 export async function lastGrant(): Promise<{ label: string; ts: Date } | null> {
   const rows = await q<{ label: string; ts: Date }[]>`
-    SELECT c.label, a.ts
-      FROM attempts a
-      JOIN codes c ON c.id = a.code_id
-     WHERE a.result = 'granted'
-     ORDER BY a.ts DESC
+    SELECT label, ts FROM (
+      SELECT c.label AS label, a.ts AS ts
+        FROM attempts a
+        JOIN codes c ON c.id = a.code_id
+       WHERE a.result = 'granted'
+      UNION ALL
+      SELECT u.name || ' (fingerprint)' AS label, e.ts AS ts
+        FROM action_events e
+        JOIN actions x ON x.id = e.action_id AND x.kind = 'door'
+        JOIN action_users u ON u.id = e.user_id
+       WHERE e.result = 'ran'
+    ) entries
+     ORDER BY ts DESC
      LIMIT 1`;
   return rows[0] ?? null;
 }
