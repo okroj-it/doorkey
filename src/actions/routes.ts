@@ -14,7 +14,8 @@ import * as webauthn from "./webauthn.ts";
  *   GET  /a/<slug>?picc=&cmac=   the same, for a tag provisioned with this URL
  *   GET  /a/<slug>?t=<token>     plain tag, unless the action requires DNA
  *   POST /a/api/begin            passkey options for the tapped action
- *   POST /a/api/run              passkey assertion -> RBAC -> run the script
+ *   POST /a/api/run              passkey assertion -> RBAC -> run the script,
+ *                                or unlock the door for the door action
  *
  * The tap proves the phone was at the tag (DNA) or knows the tag's URL
  * (plain); the passkey with user verification proves who is holding it.
@@ -68,6 +69,22 @@ function tooManyAttempts(): boolean {
   const now = Math.floor(Date.now() / 60_000);
   if (now !== attempts.window) attempts = { count: 0, window: now };
   return ++attempts.count > 30;
+}
+
+/**
+ * The door action's own brake, separate from the keypad lockout: five
+ * rejected passkeys within ten minutes pause fingerprint unlocks until the
+ * oldest of them is ten minutes old. A passkey cannot be guessed, so this only
+ * slows a broken or hostile client. It never locks the keypad, and keypad
+ * guessing never locks this.
+ */
+const DOOR_FAILURES = 5;
+const DOOR_WINDOW_MS = 10 * 60_000;
+let doorFailures: number[] = [];
+function doorPaused(): boolean {
+  const now = Date.now();
+  doorFailures = doorFailures.filter((t) => now - t < DOOR_WINDOW_MS);
+  return doorFailures.length >= DOOR_FAILURES;
 }
 
 async function page(c: Context) {
@@ -163,14 +180,19 @@ actions.post("/api/run", async (c) => {
     userAgent: userAgent(c),
   };
 
-  // Door actions are not runnable yet.
-  if (!action || !action.active || action.script_entity === null) {
+  if (!action || !action.active) {
     await db.logActionEvent({ ...base, result: "inactive", userId: null });
     return c.json({ error: "expired" }, 401);
   }
   if (action.home_only && !atHome(c)) {
     await db.logActionEvent({ ...base, result: "not_home", userId: null });
     return c.json({ error: "not home" }, 403);
+  }
+
+  const door = action.kind === "door";
+  if (door && doorPaused()) {
+    await db.logActionEvent({ ...base, result: "paused", userId: null });
+    return c.json({ error: "slow down" }, 429);
   }
 
   const body = (await c.req.json().catch(() => null)) as {
@@ -181,12 +203,14 @@ actions.post("/api/run", async (c) => {
     body?.response,
   );
   if (!credential) {
+    if (door) doorFailures.push(Date.now());
     await db.logActionEvent({ ...base, result: "bad_passkey", userId: null });
     return c.json({ error: "verification failed" }, 401);
   }
 
   const user = await db.findActionUser(credential.user_id);
   if (!user || !user.active || !(await db.userMayRun(user.id, action.id))) {
+    if (door) doorFailures.push(Date.now());
     await db.logActionEvent({
       ...base,
       result: "not_allowed",
@@ -196,16 +220,19 @@ actions.post("/api/run", async (c) => {
   }
 
   // One run per tap, decided before HA is called so a double submit cannot
-  // run the script twice.
+  // run the script (or unlock the door) twice.
   if (!session.consume(s)) return c.json({ error: "expired" }, 401);
   c.header("Set-Cookie", session.clearCookie());
 
   try {
-    await ha.runScript(action.script_entity, {
-      tapgate_action: action.slug,
-      tapgate_user: user.name,
-      tapgate_via: s.via,
-    });
+    // Unlock only, never toggle: a fingerprint at the door means "let me in".
+    if (door) await ha.unlock();
+    else
+      await ha.runScript(action.script_entity!, {
+        tapgate_action: action.slug,
+        tapgate_user: user.name,
+        tapgate_via: s.via,
+      });
   } catch (err) {
     console.error(`action ${action.slug} failed:`, err);
     await db.logActionEvent({ ...base, result: "ha_error", userId: user.id });
@@ -215,8 +242,10 @@ actions.post("/api/run", async (c) => {
   await db.markActionRun(action.id);
   await db.logActionEvent({ ...base, result: "ran", userId: user.id });
   void ha.notify(
-    action.label,
-    `${user.name} (${s.via === "sun" ? "DNA tag" : "tag"})`,
+    door ? "Front door" : action.label,
+    door
+      ? `${user.name} unlocked the door (fingerprint)`
+      : `${user.name} (${s.via === "sun" ? "DNA tag" : "tag"})`,
   );
   return c.json({ ok: true, label: action.label });
 });

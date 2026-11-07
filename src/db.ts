@@ -700,7 +700,9 @@ export type ActionResult =
   | "bad_passkey"
   | "not_home"
   | "inactive"
-  | "ha_error";
+  | "ha_error"
+  // the door action's own brake (src/actions/routes.ts)
+  | "paused";
 
 export async function logActionEvent(e: {
   result: ActionResult;
