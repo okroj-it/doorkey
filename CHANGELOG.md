@@ -20,6 +20,8 @@ The first tagged release, 0.1.0.
   keypad lockout, with its own brake; a `doorkey_fp` cookie makes it the
   phone's default view.
 - Enrolment links in the admin page are also shown as a QR code.
+- `last_entry` in Home Assistant includes fingerprint unlocks; user cards label
+  their passkeys as action passkeys.
 - Admin page: codes, tags, actions, users, passkeys and roles; English, and
   Polish chosen by browser language.
 - MQTT discovery for the keypad entities in Home Assistant.

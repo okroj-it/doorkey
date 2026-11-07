@@ -2,6 +2,7 @@ import { Hono, type Context } from "hono";
 import { config } from "../config.ts";
 import * as db from "../db.ts";
 import * as ha from "../ha.ts";
+import { publishState } from "../unlock.ts";
 import { verifySunTag } from "../auth/ntag424.ts";
 import { decideTap, ipInCidrs, tokenMatches, type TapOutcome, type VerifiedTag } from "./policy.ts";
 import * as session from "./session.ts";
@@ -254,6 +255,8 @@ actions.post("/api/run", async (c) => {
   if (door) c.header("Set-Cookie", fingerprintCookie(), { append: true });
   await db.markActionRun(action.id);
   await db.logActionEvent({ ...base, result: "ran", userId: user.id });
+  // The keypad's "last entry" in Home Assistant counts fingerprint unlocks.
+  if (door) void publishState();
   void ha.notify(
     door ? "Front door" : action.label,
     door
