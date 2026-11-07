@@ -44,13 +44,15 @@ const unlocks = () => haCalls("/api/services/lock/unlock");
 const locks = () => haCalls("/api/services/lock/lock");
 const scripts = () => haCalls("/api/services/script/turn_on");
 
-/** The doorkey CLI, for the steps an admin would take. */
-async function cli(...args: string[]): Promise<void> {
+/** The doorkey CLI, for the steps an admin would take. Returns its output. */
+async function cli(...args: string[]): Promise<string> {
   const p = Bun.spawn(["bun", "cli/doorkey.ts", ...args], {
     env: { ...process.env, DOORKEY_TAP_MODE: "static" },
-    stdout: "ignore",
+    stdout: "pipe",
   });
+  const out = await new Response(p.stdout).text();
   if ((await p.exited) !== 0) throw new Error(`cli ${args.join(" ")} failed`);
+  return out;
 }
 
 /** The door action's begin, as the keypad page would call it. */
@@ -179,6 +181,87 @@ try {
     await waitText(guest, "Cancelled", 20000),
   );
   check("and the lock was not called", (await unlocks()).length === before + 1);
+
+  // --- the keypad page -------------------------------------------------------
+  const KEY = 'button[aria-label="Open with fingerprint"]';
+  const onKeypad = (page: Page) => page.evaluate(() => !!document.querySelector(".pad"));
+  const n0 = (await unlocks()).length;
+
+  await tap(owner, KEYPAD_URL);
+  await owner.waitForSelector(".fp-main:not([disabled])");
+  check("a phone that opens the door by fingerprint starts with the button", !(await onKeypad(owner)));
+  await owner.click(".fp-main");
+  check("one press opens the door", await waitText(owner, "Unlocked"));
+  check("through lock.unlock", (await unlocks()).length === n0 + 1);
+  check("and the phone stays marked for fingerprint", await hasFingerprintCookie(owner));
+
+  await tap(owner, KEYPAD_URL);
+  await owner.waitForSelector(".fp-main:not([disabled])");
+  await owner.click("button.link");
+  check("'Use code' shows the keypad, with the fingerprint key", (await onKeypad(owner)) && !!(await owner.$(KEY)));
+
+  await tap(guest, KEYPAD_URL);
+  await guest.waitForSelector(KEY);
+  check("a phone without the cookie starts with the keypad", await onKeypad(guest));
+  await guest.click(KEY);
+  check("the guest's passkey cannot open the door from the keypad", await waitText(guest, "Cancelled", 20000));
+  check("and stays on the keypad", await onKeypad(guest));
+  check("nothing reached the lock", (await unlocks()).length === n0 + 1);
+
+  // --- separate from the keypad lockout ---------------------------------------
+  await tap(guest, KEYPAD_URL);
+  for (let i = 0; i < 4; i++)
+    await guest.evaluate(() =>
+      fetch("/api/unlock", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code: "000000" }),
+      }),
+    );
+  // A valid code refused proves the lockout is on, not just a wrong code.
+  const valid = (await cli("add", "lockout-check")).match(/code: (\d+)/)?.[1] ?? "";
+  const lockedOut = await guest.evaluate(
+    async (code) =>
+      (
+        await fetch("/api/unlock", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ code }),
+        })
+      ).status,
+    valid,
+  );
+  check("bad codes lock the keypad: even a valid code is refused", valid.length === 6 && lockedOut === 401);
+  await tap(owner, KEYPAD_URL);
+  await owner.waitForSelector(".fp-main:not([disabled])");
+  await owner.click(".fp-main");
+  check("the fingerprint still opens the door during a keypad lockout", await waitText(owner, "Unlocked"));
+  check("two fingerprint unlocks from the keypad", (await unlocks()).length === n0 + 2);
+
+  // --- the door action's own brake (last: it stays on for ten minutes) ---------
+  await tap(guest, KEYPAD_URL);
+  const garbage = () =>
+    guest.evaluate(
+      async () =>
+        (
+          await fetch("/a/api/run", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ response: { id: "not-a-passkey" } }),
+          })
+        ).status,
+    );
+  const statuses: number[] = [];
+  for (let i = 0; i < 6; i++) statuses.push(await garbage());
+  check(
+    "five rejected passkeys pause fingerprint unlocks",
+    statuses.slice(0, 5).every((s) => s === 401) && statuses[5] === 429,
+  );
+  await tap(owner, KEYPAD_URL);
+  await owner.waitForSelector(".fp-main:not([disabled])");
+  await owner.click(".fp-main");
+  check("even for the owner, who is told to use the code", await waitText(owner, "Use the code or try later"));
+  check("and the lock was not called while paused", (await unlocks()).length === n0 + 2);
 } catch (err) {
   console.log(`  ERROR  ${(err as Error).message}`);
   fail.push("unexpected error");

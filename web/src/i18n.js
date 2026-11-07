@@ -12,6 +12,10 @@ const STRINGS = {
     tryAgain: 'Try again',
     checking: 'Checking…',
     clear: 'Clear',
+    openFingerprint: 'Open with fingerprint',
+    useCode: 'Use code',
+    doorNotAllowed: 'This passkey cannot open the door.',
+    fingerprintPaused: 'Too many attempts. Use the code or try later.',
 
     action: 'Action',
     passkey: 'Passkey',
@@ -41,6 +45,10 @@ const STRINGS = {
     tryAgain: 'Spróbuj ponownie',
     checking: 'Sprawdzam…',
     clear: 'Wyczyść',
+    openFingerprint: 'Otwórz odciskiem palca',
+    useCode: 'Użyj kodu',
+    doorNotAllowed: 'Ten passkey nie otworzy drzwi.',
+    fingerprintPaused: 'Za dużo prób. Użyj kodu lub spróbuj później.',
 
     action: 'Akcja',
     passkey: 'Passkey',
