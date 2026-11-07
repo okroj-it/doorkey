@@ -1,6 +1,8 @@
 <script>
   // Tap-gated actions: actions, action users with their passkeys, and roles.
   // Everything here is the same operation as a CLI command, logged the same.
+  import QrCode from './QrCode.svelte';
+
   let { api, fmt } = $props();
 
   let data = $state({ actions: [], users: [], roles: [], tags: [], events: [] });
@@ -9,7 +11,7 @@
   let busy = $state(false);
 
   // A tag URL or enrolment link, shown once right after it is minted.
-  let secret = $state(null);    // { title, url, note }
+  let secret = $state(null);    // { title, url, note, qr }
   let copied = $state(false);
 
   let newAction = $state({ label: '', slug: '', script: '', requireSun: false, homeOnly: false });
@@ -57,8 +59,9 @@
     if (!slugTouched) newAction.slug = slugify(entity.replace(/^script\./, ''));
   }
 
-  function show(title, url, note) {
-    secret = { title, url, note };
+  /** qr: also as a QR code, for links meant to be opened on a phone. */
+  function show(title, url, note, qr = false) {
+    secret = { title, url, note, qr };
     copied = false;
   }
 
@@ -154,7 +157,8 @@
       show(
         `Enrolment link for ${u.name} · ${device || 'phone'}`,
         url,
-        `Single use, valid until ${fmt(expiresAt).slice(11)}. Open it on that device.`,
+        `Single use, valid until ${fmt(expiresAt).slice(11)}. Scan it with that device, or open it there.`,
+        true,
       );
     });
   }
@@ -183,6 +187,7 @@
       <code class="url">{secret.url}</code>
       <span class="muted small">{secret.note}</span>
     </div>
+    {#if secret.qr}<QrCode text={secret.url} label={secret.title} />{/if}
     <div class="row">
       <button class="primary" onclick={copy}>{copied ? 'Copied ✓' : 'Copy'}</button>
       <button class="link" onclick={() => (secret = null)}>dismiss</button>

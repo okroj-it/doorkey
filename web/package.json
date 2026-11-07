@@ -12,6 +12,7 @@
     "vite-plugin-singlefile": "^2.0.0"
   },
   "dependencies": {
-    "@simplewebauthn/browser": "^14.0.0"
+    "@simplewebauthn/browser": "^14.0.0",
+    "uqr": "^0.1.3"
   }
 }
