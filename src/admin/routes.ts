@@ -351,15 +351,25 @@ admin.get("/api/ha/scripts", async (c) => {
 });
 
 admin.post("/api/actions", async (c) => {
-  const b = await body<{ slug: string; label: string; script: string; requireSun: boolean; homeOnly: boolean }>(c);
+  const b = await body<{
+    slug: string;
+    label: string;
+    script: string;
+    door: boolean;
+    requireSun: boolean;
+    homeOnly: boolean;
+  }>(c);
   const slug = (b.slug ?? "").trim();
-  const script = (b.script ?? "").trim();
+  // The door action unlocks the front door and has no script.
+  const door = b.door === true;
+  const script = door ? null : (b.script ?? "").trim();
   if (!SLUG.test(slug)) return c.json({ error: "slug: lowercase letters, digits and -" }, 400);
-  if (!SCRIPT.test(script)) return c.json({ error: "the entity must be a script.*" }, 400);
+  if (script !== null && !SCRIPT.test(script)) return c.json({ error: "the entity must be a script.*" }, 400);
+  if (door && (await db.findDoorAction())) return c.json({ error: "there is already a door action" }, 409);
   const label = (b.label ?? "").trim() || slug;
   try {
     const id = await db.insertAction(slug, label, script, b.requireSun === true, b.homeOnly === true);
-    await db.logAdminEvent("action_created", `${slug} -> ${script}`, ip(c));
+    await db.logAdminEvent("action_created", `${slug} -> ${script ?? "door"}`, ip(c));
     return c.json({ id });
   } catch (err) {
     if (constraintKind(err) === "unique") return c.json({ error: `action ${slug} already exists` }, 409);

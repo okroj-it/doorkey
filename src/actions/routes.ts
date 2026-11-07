@@ -14,7 +14,8 @@ import * as webauthn from "./webauthn.ts";
  *   GET  /a/<slug>?picc=&cmac=   the same, for a tag provisioned with this URL
  *   GET  /a/<slug>?t=<token>     plain tag, unless the action requires DNA
  *   POST /a/api/begin            passkey options for the tapped action
- *   POST /a/api/run              passkey assertion -> RBAC -> run the script
+ *   POST /a/api/run              passkey assertion -> RBAC -> run the script,
+ *                                or unlock the door for the door action
  *
  * The tap proves the phone was at the tag (DNA) or knows the tag's URL
  * (plain); the passkey with user verification proves who is holding it.
@@ -69,6 +70,32 @@ function tooManyAttempts(): boolean {
   if (now !== attempts.window) attempts = { count: 0, window: now };
   return ++attempts.count > 30;
 }
+
+/**
+ * The door action's own brake, separate from the keypad lockout: five
+ * rejected passkeys within ten minutes pause fingerprint unlocks until the
+ * oldest of them is ten minutes old. A passkey cannot be guessed, so this only
+ * slows a broken or hostile client. It never locks the keypad, and keypad
+ * guessing never locks this.
+ */
+const DOOR_FAILURES = 5;
+const DOOR_WINDOW_MS = 10 * 60_000;
+let doorFailures: number[] = [];
+function doorPaused(): boolean {
+  const now = Date.now();
+  doorFailures = doorFailures.filter((t) => now - t < DOOR_WINDOW_MS);
+  return doorFailures.length >= DOOR_FAILURES;
+}
+
+/**
+ * Remembers on this phone that its owner opens the door by fingerprint, so
+ * the keypad starts with that button. Not a secret and not a credential -
+ * the passkey decides - so it is readable by the page, and set by the server
+ * because Safari caps cookies a script writes at seven days.
+ */
+export const FINGERPRINT_COOKIE = "doorkey_fp";
+const fingerprintCookie = () =>
+  `${FINGERPRINT_COOKIE}=1; Secure; SameSite=Lax; Path=/; Max-Age=${365 * 86_400}`;
 
 async function page(c: Context) {
   c.header("Cache-Control", "no-store");
@@ -126,6 +153,8 @@ actions.post("/api/enroll/:token/verify", async (c) => {
     clientIp(c),
   );
   if (!ok) return c.json({ error: "verification failed" }, 400);
+  const door = await db.findDoorAction();
+  if (door && (await db.userMayRun(found.user.id, door.id))) c.header("Set-Cookie", fingerprintCookie());
   return c.json({ ok: true, user: found.user.name });
 });
 
@@ -172,6 +201,12 @@ actions.post("/api/run", async (c) => {
     return c.json({ error: "not home" }, 403);
   }
 
+  const door = action.kind === "door";
+  if (door && doorPaused()) {
+    await db.logActionEvent({ ...base, result: "paused", userId: null });
+    return c.json({ error: "slow down" }, 429);
+  }
+
   const body = (await c.req.json().catch(() => null)) as {
     response?: unknown;
   } | null;
@@ -180,12 +215,14 @@ actions.post("/api/run", async (c) => {
     body?.response,
   );
   if (!credential) {
+    if (door) doorFailures.push(Date.now());
     await db.logActionEvent({ ...base, result: "bad_passkey", userId: null });
     return c.json({ error: "verification failed" }, 401);
   }
 
   const user = await db.findActionUser(credential.user_id);
   if (!user || !user.active || !(await db.userMayRun(user.id, action.id))) {
+    if (door) doorFailures.push(Date.now());
     await db.logActionEvent({
       ...base,
       result: "not_allowed",
@@ -195,27 +232,33 @@ actions.post("/api/run", async (c) => {
   }
 
   // One run per tap, decided before HA is called so a double submit cannot
-  // run the script twice.
+  // run the script (or unlock the door) twice.
   if (!session.consume(s)) return c.json({ error: "expired" }, 401);
   c.header("Set-Cookie", session.clearCookie());
 
   try {
-    await ha.runScript(action.script_entity, {
-      tapgate_action: action.slug,
-      tapgate_user: user.name,
-      tapgate_via: s.via,
-    });
+    // Unlock only, never toggle: a fingerprint at the door means "let me in".
+    if (door) await ha.unlock();
+    else
+      await ha.runScript(action.script_entity!, {
+        tapgate_action: action.slug,
+        tapgate_user: user.name,
+        tapgate_via: s.via,
+      });
   } catch (err) {
     console.error(`action ${action.slug} failed:`, err);
     await db.logActionEvent({ ...base, result: "ha_error", userId: user.id });
     return c.json({ error: "home assistant unavailable" }, 502);
   }
 
+  if (door) c.header("Set-Cookie", fingerprintCookie(), { append: true });
   await db.markActionRun(action.id);
   await db.logActionEvent({ ...base, result: "ran", userId: user.id });
   void ha.notify(
-    action.label,
-    `${user.name} (${s.via === "sun" ? "DNA tag" : "tag"})`,
+    door ? "Front door" : action.label,
+    door
+      ? `${user.name} unlocked the door (fingerprint)`
+      : `${user.name} (${s.via === "sun" ? "DNA tag" : "tag"})`,
   );
   return c.json({ ok: true, label: action.label });
 });
@@ -245,6 +288,24 @@ async function openSession(
   }
   c.header("Set-Cookie", session.cookieHeader(session.issue(action.slug, tap.via, tap.tagId)));
   return null;
+}
+
+/**
+ * A door tap that shows the keypad also opens the door action, when there is
+ * one it allows: the keypad then offers "open with fingerprint" next to the
+ * code. The same session as a tap on the action's own tag, so the same
+ * passkey, RBAC and one-run checks apply. Null: no fingerprint this time.
+ */
+export async function doorActionCookie(
+  c: Context,
+  via: "sun" | "token",
+  tagId: number | null,
+): Promise<string | null> {
+  const door = await db.findDoorAction();
+  if (!door || !door.active) return null;
+  if (door.require_sun && via !== "sun") return null;
+  if (door.home_only && !atHome(c)) return null;
+  return session.cookieHeader(session.issue(door.slug, via, tagId));
 }
 
 /**

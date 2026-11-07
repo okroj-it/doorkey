@@ -41,8 +41,17 @@
     s.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
       .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 63);
 
+  // 'door' is the door action: it unlocks the front door and has no script.
+  const DOOR = 'door';
+  const hasDoor = $derived(data.actions.some((a) => a.kind === 'door'));
+
   function pickScript(entity) {
     newAction.script = entity;
+    if (entity === DOOR) {
+      if (!newAction.label) newAction.label = 'Front door';
+      if (!slugTouched) newAction.slug = 'front-door';
+      return;
+    }
     const script = scripts?.find((s) => s.entity_id === entity);
     if (!newAction.label && script) newAction.label = script.name;
     if (!slugTouched) newAction.slug = slugify(entity.replace(/^script\./, ''));
@@ -63,7 +72,8 @@
   const createAction = (event) => {
     event.preventDefault();
     return run(async () => {
-      await send('/actions', 'POST', newAction);
+      const { script, ...rest } = newAction;
+      await send('/actions', 'POST', script === DOOR ? { ...rest, door: true } : { ...rest, script });
       newAction = { label: '', slug: '', script: '', requireSun: false, homeOnly: false };
       slugTouched = false;
     });
@@ -197,7 +207,11 @@
 
         <dl>
           <dt>Runs</dt>
-          <dd class="mono">{a.script_entity}</dd>
+          {#if a.kind === 'door'}
+            <dd>unlocks the front door · offered on the keypad after a door tap</dd>
+          {:else}
+            <dd class="mono">{a.script_entity}</dd>
+          {/if}
 
           <dt>Last run</dt>
           <dd class="muted">{fmt(a.last_run_at)}</dd>
@@ -284,10 +298,11 @@
       {:else if scripts.length}
         <select required value={newAction.script} onchange={(e) => pickScript(e.currentTarget.value)}>
           <option value="" disabled>pick a script…</option>
+          {#if !hasDoor}<option value={DOOR}>Front door · unlock with fingerprint</option>{/if}
           {#each scripts as s}<option value={s.entity_id}>{s.name} · {s.entity_id}</option>{/each}
         </select>
       {:else}
-        <input required pattern={'script\\.[a-z0-9_]+'} placeholder="script.something (HA unreachable)"
+        <input required pattern={'script\\.[a-z0-9_]+|door'} placeholder="script.something or door (HA unreachable)"
                bind:value={newAction.script} />
       {/if}
     </label>

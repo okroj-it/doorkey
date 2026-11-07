@@ -51,9 +51,9 @@ export interface ScheduleWindow {
 }
 
 /** Postgres: idempotent DDL, re-run in full on every start. */
-const PG_MIGRATIONS = ["001_init.sql", "002_admin.sql", "003_tags.sql", "004_actions.sql"];
+const PG_MIGRATIONS = ["001_init.sql", "002_admin.sql", "003_tags.sql", "004_actions.sql", "005_door_action.sql"];
 /** SQLite: one file per schema version, each applied once (user_version). */
-const SQLITE_MIGRATIONS = ["001_schema.sql"];
+const SQLITE_MIGRATIONS = ["001_schema.sql", "002_door_action.sql"];
 
 export async function migrate(): Promise<void> {
   if (dialect === "sqlite") return migrateSqlite();
@@ -405,7 +405,9 @@ export interface ActionRow {
   id: number;
   slug: string;
   label: string;
-  script_entity: string;
+  /** script: turn on script_entity. door: unlock the front door (no script). */
+  kind: "script" | "door";
+  script_entity: string | null;
   require_sun: boolean;
   home_only: boolean;
   token_hash: Buffer | null;
@@ -414,30 +416,40 @@ export interface ActionRow {
 
 export async function findActionBySlug(slug: string): Promise<ActionRow | null> {
   const rows = await q<ActionRow[]>`
-    select id, slug, label, script_entity, require_sun, home_only, token_hash, active
+    select id, slug, label, kind, script_entity, require_sun, home_only, token_hash, active
       from actions where slug = ${slug} limit 1`;
   return rows[0] ?? null;
 }
 
 export async function findActionById(id: number): Promise<ActionRow | null> {
   const rows = await q<ActionRow[]>`
-    select id, slug, label, script_entity, require_sun, home_only, token_hash, active
+    select id, slug, label, kind, script_entity, require_sun, home_only, token_hash, active
       from actions where id = ${id} limit 1`;
   return rows[0] ?? null;
 }
 
+/** A null script makes the door action; there can be only one (unique). */
 export async function insertAction(
   slug: string,
   label: string,
-  scriptEntity: string,
+  scriptEntity: string | null,
   requireSun: boolean,
   homeOnly: boolean,
 ): Promise<number> {
+  const kind = scriptEntity === null ? "door" : "script";
   const rows = await q<{ id: number }[]>`
-    insert into actions (slug, label, script_entity, require_sun, home_only)
-    values (${slug}, ${label}, ${scriptEntity}, ${requireSun}, ${homeOnly})
+    insert into actions (slug, label, kind, script_entity, require_sun, home_only)
+    values (${slug}, ${label}, ${kind}, ${scriptEntity}, ${requireSun}, ${homeOnly})
     returning id`;
   return rows[0]!.id;
+}
+
+/** The door action, if one exists. The keypad offers it after a door tap. */
+export async function findDoorAction(): Promise<ActionRow | null> {
+  const rows = await q<ActionRow[]>`
+    select id, slug, label, kind, script_entity, require_sun, home_only, token_hash, active
+      from actions where kind = 'door' limit 1`;
+  return rows[0] ?? null;
 }
 
 export async function setActionToken(id: number, tokenHash: Buffer | null): Promise<void> {
@@ -476,7 +488,7 @@ function namesBy(pairs: { owner: number; name: string }[]): Map<number, string[]
 export async function listActions() {
   const [actions, roles, tags] = await Promise.all([
     q<Record<string, unknown>[]>`
-      select id, slug, label, script_entity, require_sun, home_only,
+      select id, slug, label, kind, script_entity, require_sun, home_only,
              token_hash is not null as has_token, active, last_run_at
         from actions order by slug`,
     q<{ owner: number; name: string }[]>`
@@ -688,7 +700,9 @@ export type ActionResult =
   | "bad_passkey"
   | "not_home"
   | "inactive"
-  | "ha_error";
+  | "ha_error"
+  // the door action's own brake (src/actions/routes.ts)
+  | "paused";
 
 export async function logActionEvent(e: {
   result: ActionResult;

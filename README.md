@@ -52,6 +52,7 @@
 | 🧑‍🤝‍🧑 **Guest codes with rules** | Expiry, max uses, weekly schedules (`mon,wed 07:00-09:00`), shown once and stored only as an HMAC. |
 | 🛡️ **Harsh, global lockout** | 3 failures → 60 s, 4 → 24 h, for everyone. IP bans are theatre against a phone that can rotate its MAC. |
 | 👆 **Tap-gated HA actions** | Tag tap + passkey with fingerprint → one allowlisted `script.*`. Role-based, one run per tap. |
+| 🫆 **Fingerprint at the door** | Enrolled people tap the door tag and open with a fingerprint on their own phone instead of typing a code. Unlock only, never from afar. |
 | 🔑 **Passkeys only** | Admin and action sign-in are WebAuthn resident keys. No passwords, no fallback, unphishable. |
 | 🖥️ **Admin UI** | Codes, lockouts, audit logs, actions, users, roles and passkeys — in a browser, behind a passkey. |
 | 📡 **Home Assistant native** | MQTT discovery for keypad state, push notifications, scripts receive who ran them. |
@@ -103,6 +104,7 @@ Be clear about what each layer actually does.
 - **The lockout is deliberately harsh and has no reset button at the door.** The Companion app and the physical key both bypass this service, so locking the keypad costs the household nothing. If a guest locks themselves out, you get a notification and let them in from your phone (or clear it in `/admin`).
 - **Every failure returns an identical response.** `bad_code`, `expired`, `out_of_schedule`, `exhausted`, `code_locked` and `system_locked` are all one 401 after a fixed 1 s floor; the real reason stays in `attempts.result`. Telling the caller is a free oracle, and tells an honest guest nothing useful. Every bad tap is likewise a plain 404, indistinguishable from a path that was never routed.
 - **Codes are stored as `HMAC-SHA256(pepper, code)`** with the pepper in the environment, never in the database. That gives an O(1) indexed lookup, so identifying a code takes the same time whether or not it exists. The trade: somebody holding *both* the database and the pepper brute-forces six digits instantly. Argon2 would fix that but would mean verifying against every row in turn — seconds per attempt.
+- **Fingerprint unlocks are not codes and live outside this ladder.** Bad codes never block them, and they never reset or extend a keypad lockout. A passkey cannot be guessed, so the [door action](#-opening-the-door-with-a-fingerprint) only has a small brake of its own against a broken or hostile client.
 - **No page can be framed by another site.** Every response carries `frame-ancestors 'none'`, so nobody can put the keypad or the admin page inside a frame of their own and trick a tap. (As a Home Assistant app, the admin listener allows `'self'`: Home Assistant shows it in a frame on its own origin.) To reach the admin from Home Assistant, link to it — a dashboard button that opens it in a new tab.
 
 > [!CAUTION]
@@ -200,15 +202,53 @@ sequenceDiagram
 - **The tag is presence, the passkey is identity.** Neither alone runs anything.
 - **A DNA tag** linked to an action proves the phone is at the tag and opens only that action — never the door, never another action.
 - **A plain tag** carries `?t=<128-bit token>` (only its HMAC is stored). Its URL can be copied and reopened from anywhere, so it proves nothing about location — fine for "confirm this deliberate action", wrong for doors. Mark such actions **home-only** to require a client IP in `DOORKEY_HOME_CIDRS`, or **DNA required** to refuse plain tags altogether.
-- **Only `script.*`**, fixed per action server-side. The browser never names an entity. Put the real logic, and any extra conditions, in the script; it receives who ran it as variables.
+- **Only `script.*`**, fixed per action server-side — or, for the one [door action](#-opening-the-door-with-a-fingerprint), `lock.unlock` on `HA_LOCK_ENTITY`. The browser never names an entity. Put the real logic, and any extra conditions, in the script; it receives who ran it as variables.
 - **One run per tap.** The session is spent when the script starts; running again means tapping again.
 - **Action passkeys are not admin passkeys.** Separate users, separate table, separate WebAuthn user handle on the same RP id. An action passkey cannot sign in to `/admin`, an admin passkey cannot run an action, and the tap page only offers passkeys whose user may run that action.
 - **RBAC:** users have roles, actions allow roles. Disabling a user, removing a role or disabling an action takes effect on the next tap.
 
-Every attempt lands in `action_events` (`ran`, `not_allowed`, `bad_passkey`, `not_home`, `inactive`, `ha_error`), visible in `/admin`, and a successful run sends the usual `HA_NOTIFY_SERVICE` push.
+Every attempt lands in `action_events` (`ran`, `not_allowed`, `bad_passkey`, `not_home`, `inactive`, `ha_error`, and `paused` for the door action's brake), visible in `/admin`, and a successful run sends the usual `HA_NOTIFY_SERVICE` push.
 
 > [!TIP]
 > Removing an action never turns its tag back into a door key: the foreign key is `RESTRICT`, so the tag has to be unlinked first, on purpose — and the UI warns that unlinking makes it open the front door again.
+
+### 🚪 Opening the door with a fingerprint
+
+The keypad's code is for guests. Household members can skip it: tap the door tag, touch the fingerprint key, the door opens. It is a tap-gated action like any other — same passkeys, roles, one run per tap and log — except that it unlocks the front door instead of running a script.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor U as You
+    participant T as 🏷️ Door tag
+    participant P as 📱 Phone
+    participant D as 🔐 doorkey
+    participant H as 🏠 Home Assistant
+
+    U->>T: tap
+    T-->>P: /k/sun?picc=…&cmac=…
+    P->>D: GET
+    D-->>P: keypad + keypad session + door action session (120 s)
+    U->>P: 🫆 key (or the big button) + 👆
+    P->>D: WebAuthn assertion (user verification required)
+    D->>D: passkey valid → user active → role may open the door → spend session
+    D->>H: lock.unlock on HA_LOCK_ENTITY
+    D-->>P: ✓ Unlocked
+    D--)H: notify "alex unlocked the door (fingerprint)"
+```
+
+- **There is one door action, and it has no script.** Create it with `action:add front-door door` or the *Front door* choice in the Actions tab, and allow the household's role.
+- **The door tag is the presence check.** A door tap that shows the keypad also opens the door action — when it is active and its *DNA required* / *home-only* settings allow the tap. No tap, no fingerprint: it cannot be used from afar. (A DNA tag or plain token linked to the door action works too, like any action.)
+- **Unlock only, never toggle.** A fingerprint at the door means "let me in"; locking stays with the code, the lock's auto-lock or Home Assistant.
+- **Separate from the keypad lockout.** Bad codes never block fingerprint unlocks. Its own brake: 5 rejected passkeys within 10 minutes pause it until the oldest is 10 minutes old (logged as `paused`); the keypad says to use the code.
+- **Phones remember the preference.** Enrolling a passkey that may open the door, and every fingerprint unlock, sets a `doorkey_fp` cookie (one year). The keypad then starts with a large *Open with fingerprint* button and a *Use code* link; without it, the fingerprint key sits in the keypad's empty corner. The cookie is not a credential — anyone can set it and only gets a prompt their passkey cannot answer.
+
+```sh
+dk action:add front-door door --label "Front door"
+dk action:allow front-door household
+dk user:grant alex household
+dk user:enroll alex pixel            # open the link on the phone; it is marked for fingerprint
+```
 
 ### Setting one up
 
@@ -239,7 +279,8 @@ user:grant | user:ungrant <name> <role>
 user:disable | user:enable <name>
 user:reset <name>                      remove all of a user's passkeys
 actions                                actions, roles, tags
-action:add <slug> <script.x> [--label TEXT] [--sun] [--home-only]
+action:add <slug> <script.x|door> [--label TEXT] [--sun] [--home-only]
+                                       door: the one door action (unlocks, no script)
 action:allow | action:deny <slug> <role>
 action:token <slug>                    (re)issue the plain-tag URL; the old one dies
 action:untoken <slug>                  stop accepting plain tags

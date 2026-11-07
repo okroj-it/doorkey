@@ -225,7 +225,7 @@ async function actionsCli(cmd: string, args: string[]): Promise<boolean> {
           rows.map((r) => ({
             slug: r.slug,
             label: r.label,
-            script: r.script_entity,
+            runs: r.kind === "door" ? "door (unlock)" : r.script_entity,
             dna: r.require_sun ? "required" : "",
             home: r.home_only ? "only" : "",
             token: r.has_token ? "yes" : "",
@@ -238,11 +238,15 @@ async function actionsCli(cmd: string, args: string[]): Promise<boolean> {
       return true;
     }
     case "action:add": {
-      const usage = "action:add <slug> <script.entity> [--label TEXT] [--sun] [--home-only]";
+      const usage = "action:add <slug> <script.entity|door> [--label TEXT] [--sun] [--home-only]";
       const slug = arg(args, 0, usage);
-      const script = arg(args, 1, usage);
+      const target = arg(args, 1, usage);
+      // "door": the one door action, which unlocks the front door after a
+      // fingerprint and is offered on the keypad after a door tap.
+      const script = target === "door" ? null : target;
       if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(slug)) throw new Error("slug: lowercase letters, digits and -");
-      if (!/^script\.[a-z0-9_]+$/.test(script)) throw new Error("the entity must be a script.*");
+      if (script !== null && !/^script\.[a-z0-9_]+$/.test(script)) throw new Error("the entity must be a script.* or door");
+      if (script === null && (await db.findDoorAction())) throw new Error("there is already a door action");
       const label = flag(args, "label") ?? slug;
       const id = await db.insertAction(slug, label, script, args.includes("--sun"), args.includes("--home-only"));
       console.log(`action ${slug} added (id ${id}). Next: action:allow ${slug} <role>, then action:token or action:link-tag`);
@@ -398,7 +402,7 @@ try {
   user:disable|user:enable <name>
   user:reset <name>                     remove all of a user's passkeys
   actions                               actions, roles, tags
-  action:add <slug> <script.x> [--label TEXT] [--sun] [--home-only]
+  action:add <slug> <script.x|door> [--label TEXT] [--sun] [--home-only]
   action:allow|action:deny <slug> <role>
   action:token <slug>                   (re)issue the plain-tag URL, shown once
   action:untoken <slug>                 stop accepting the plain-tag URL

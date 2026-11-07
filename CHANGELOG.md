@@ -15,6 +15,10 @@ The first tagged release, 0.1.0.
   failed tries.
 - Tap-gated Home Assistant actions: a tag tap plus a passkey (fingerprint)
   runs an allowlisted `script.*`, with roles deciding who may run what.
+- Open the door with a fingerprint: the door action unlocks the front door
+  after a door tap and a passkey, offered on the keypad. Separate from the
+  keypad lockout, with its own brake; a `doorkey_fp` cookie makes it the
+  phone's default view.
 - Admin page: codes, tags, actions, users, passkeys and roles; English, and
   Polish chosen by browser language.
 - MQTT discovery for the keypad entities in Home Assistant.

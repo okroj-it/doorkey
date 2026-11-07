@@ -1,6 +1,6 @@
 import { Hono, type Context, type Next } from "hono";
 import type { Server } from "bun";
-import { actions, openFromDoorTag } from "./actions/routes.ts";
+import { actions, doorActionCookie, openFromDoorTag } from "./actions/routes.ts";
 import { admin } from "./admin/routes.ts";
 import { isAppMode } from "./app-mode.ts";
 import { config } from "./config.ts";
@@ -78,18 +78,22 @@ app.route("/a", actions);
  */
 app.get("/k/:token", async (c) => {
   const query = new URL(c.req.url).searchParams;
+  let tagId: number | null = null;
   if (config.tap.mode === "sun") {
     // Verified here rather than through verifyTap, because a tag linked to an
     // action opens that action instead of the keypad.
     const tag = await verifySunTag(query);
     if (!tag) return c.notFound();
     if (tag.action_id !== null) return openFromDoorTag(c, tag);
+    tagId = tag.id;
   } else if (!(await verifyTap({ token: c.req.param("token"), query }))) {
     return c.notFound();
   }
 
   const html = await Bun.file(KEYPAD).text();
   c.header("Set-Cookie", session.cookieHeader(session.issue()));
+  const door = await doorActionCookie(c, config.tap.mode === "sun" ? "sun" : "token", tagId);
+  if (door) c.header("Set-Cookie", door, { append: true });
   c.header("Cache-Control", "no-store");
   return c.html(html);
 });
