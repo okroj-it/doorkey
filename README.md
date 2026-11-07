@@ -357,7 +357,7 @@ Schedules are `day[,day] HH:MM-HH:MM`, multiple windows separated by `;`, and wi
 
 ## 🏠 Home Assistant
 
-- **MQTT discovery** on startup and on every broker reconnect gives a **Door Keypad** device with `locked_out`, `failed_today`, `last_entry` and `last_entry_at`. Useful automation: on `locked_out`, notify and turn on the porch light — someone standing outside guessing codes is exactly the event worth a camera snapshot.
+- **MQTT discovery** on startup and on every broker reconnect gives a **Door Keypad** device with `locked_out`, `failed_today`, `last_entry` and `last_entry_at`. `last_entry` is the newest way in: a code's label, or `<user> (fingerprint)` for a [fingerprint unlock](#-opening-the-door-with-a-fingerprint); the lockout and failure counts are about codes only. Useful automation: on `locked_out`, notify and turn on the porch light — someone standing outside guessing codes is exactly the event worth a camera snapshot.
 - **The HA token** is used for `lock.*` on `HA_LOCK_ENTITY`, `notify.*`, `script.turn_on` for actions, and reading `script.*` states for the admin picker. HA tokens cannot be scoped, so it stays server-side; what limits actions is the allowlist in the `actions` table.
 - **Scripts receive** `tapgate_user`, `tapgate_action` and `tapgate_via` (`sun` or `token`):
 
