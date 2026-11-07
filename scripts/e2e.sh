@@ -83,6 +83,17 @@ url=$(cli action:token test | grep -o 'http[^ ]*')
 run "actions" bun test/action-passkey.ts "$owner" "$guest" "$url"
 
 reset_db
+server static
+scli() { DOORKEY_TAP_MODE=static bun cli/doorkey.ts "$@"; }
+scli user:add owner >/dev/null && scli user:grant owner household >/dev/null
+scli user:add guest >/dev/null && scli user:grant guest guests >/dev/null
+scli action:add front-door door --label "Front door" >/dev/null && scli action:allow front-door household >/dev/null
+owner=$(scli user:enroll owner phone | token enroll)
+guest=$(scli user:enroll guest phone | token enroll)
+door=$(scli action:token front-door | grep -o 'http[^ ]*')
+run "door fingerprint" bun test/door-fingerprint.ts "$owner" "$guest" "$door"
+
+reset_db
 server sun
 run "admin actions tab" bun test/admin-actions.ts "$(cli admin:enroll tester | token enroll)"
 

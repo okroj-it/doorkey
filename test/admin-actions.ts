@@ -345,6 +345,38 @@ try {
     await waitText(admin, "No actions yet."),
   );
 
+  // --- the door action ------------------------------------------------------
+  const createAction = (body: unknown) =>
+    admin.evaluate(
+      async (o, b) =>
+        (
+          await fetch(`${o}/admin/api/actions`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(b),
+          })
+        ).status,
+      ORIGIN,
+      body,
+    );
+  check(
+    "the door action is created without a script",
+    (await createAction({ slug: "front-door", label: "Front door", door: true })) === 200,
+  );
+  check(
+    "there can be only one door action",
+    (await createAction({ slug: "back-door", label: "Back door", door: true })) === 409,
+  );
+  const listed = (await admin.evaluate(
+    async (o) => (await fetch(`${o}/admin/api/actions`)).json(),
+    ORIGIN,
+  )) as { actions: { slug: string; kind: string; script_entity: string | null }[] };
+  const doorRow = listed.actions.find((a) => a.slug === "front-door");
+  check(
+    "it is listed as the door action",
+    doorRow?.kind === "door" && doorRow.script_entity === null && listed.actions.length === 1,
+  );
+
   const log = await admin.evaluate(
     async (o) => (await fetch(`${o}/admin/api/log?limit=50`)).json(),
     ORIGIN,
