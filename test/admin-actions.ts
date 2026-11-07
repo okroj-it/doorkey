@@ -255,6 +255,10 @@ try {
   await admin.type('input[placeholder="Ola"]', "ola");
   await admin.click('form[aria-label="New user"] button.primary');
   check("the user card appears", await waitText(admin, "none yet"));
+  check(
+    "its passkeys are labelled as action passkeys, pointing to the Door tab",
+    await waitText(admin, "admin sign-in passkeys are on the Door tab"),
+  );
   await typeRole(admin, 1, "owner");
   // The user's own card, not any chip: the action card already has two.
   await admin.waitForFunction(() =>

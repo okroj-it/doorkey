@@ -355,8 +355,9 @@
             </div>
           </dd>
 
-          <dt>Passkeys</dt>
+          <dt>Action passkeys</dt>
           <dd>
+            <span class="muted small hint">door &amp; actions only — admin sign-in passkeys are on the Door tab</span>
             {#each u.credentials as k}
               <div class="passkey">
                 <span>{k.label}</span>
@@ -482,6 +483,7 @@
   .fresh .grow { display: flex; flex-direction: column; gap: .35rem; min-width: 0; flex: 1; }
   .url { display: block; font-size: .85rem; overflow-wrap: anywhere; user-select: all; padding: .35rem .5rem; }
   .row { display: flex; gap: .75rem; align-items: center; }
+  .hint { display: block; margin-bottom: .3rem; }
 
   form { display: flex; flex-wrap: wrap; gap: .75rem; align-items: flex-end; }
   form.inline { display: inline-flex; }
