@@ -163,7 +163,8 @@ actions.post("/api/run", async (c) => {
     userAgent: userAgent(c),
   };
 
-  if (!action || !action.active) {
+  // Door actions are not runnable yet.
+  if (!action || !action.active || action.script_entity === null) {
     await db.logActionEvent({ ...base, result: "inactive", userId: null });
     return c.json({ error: "expired" }, 401);
   }
