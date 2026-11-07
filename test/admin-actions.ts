@@ -13,6 +13,7 @@
 import { createCipheriv, randomBytes } from "node:crypto";
 import puppeteer, { type Page } from "puppeteer-core";
 import { encodeTagCode } from "../src/tag-code.ts";
+import { qrPath } from "../web/src/qr.js";
 
 const ORIGIN = process.env.TEST_ORIGIN ?? "http://localhost:18080";
 const FAKE_HA = process.env.TEST_FAKE_HA ?? "http://127.0.0.1:18123";
@@ -247,6 +248,7 @@ try {
     "issuing a tag URL shows it once",
     /\/a\/tapgate-test\?t=[A-Za-z0-9_-]{22}$/.test(tagUrl),
   );
+  check("a tag URL has no QR code: it goes onto the tag", !(await admin.$(".fresh svg.qr")));
   await press(admin, "dismiss");
 
   // --- a user, a role, an enrolment link --------------------------------------
@@ -268,6 +270,8 @@ try {
     "an enrolment link is minted from the UI",
     /\/a\/enroll\/[A-Za-z0-9_-]{32}$/.test(enrollUrl),
   );
+  const shownQr = await admin.$eval(".fresh svg.qr path", (e) => e.getAttribute("d")).catch(() => null);
+  check("the enrolment link is also a QR code of exactly that URL", shownQr === qrPath(enrollUrl).d);
 
   // --- the user's phone: register, tap, confirm -------------------------------
   const ola = await phone();
