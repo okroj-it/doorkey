@@ -91,7 +91,7 @@ scli action:add front-door door --label "Front door" >/dev/null && scli action:a
 owner=$(scli user:enroll owner phone | token enroll)
 guest=$(scli user:enroll guest phone | token enroll)
 door=$(scli action:token front-door | grep -o 'http[^ ]*')
-run "door fingerprint" bun test/door-fingerprint.ts "$owner" "$guest" "$door"
+run "door fingerprint" bun test/door-fingerprint.ts "$owner" "$guest" "$door" "$ORIGIN/k/$DOORKEY_STATIC_PATH"
 
 reset_db
 server sun

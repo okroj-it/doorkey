@@ -3,7 +3,7 @@
  * browser with CDP virtual authenticators standing in for two phones.
  *
  *   bun test/fake-ha.ts &
- *   bun test/door-fingerprint.ts <owner-enroll-token> <guest-enroll-token> <door-action-url>
+ *   bun test/door-fingerprint.ts <owner-enroll-token> <guest-enroll-token> <door-action-url> <keypad-url>
  *
  * Expects doorkey on TEST_ORIGIN (static tap mode, DOORKEY_RP_ID=localhost,
  * HA_URL at the fake HA) and the CLI to have set up:
@@ -11,15 +11,17 @@
  *   - a user with that role                          (owner-enroll-token)
  *   - a user without it                              (guest-enroll-token)
  *   - the door action's plain-tag URL from action:token (door-action-url)
+ * and the keypad's static tag URL (keypad-url). The CLI is run again to
+ * disable and re-enable the door action, with the environment inherited.
  */
 import puppeteer, { type Page } from "puppeteer-core";
 
 const ORIGIN = process.env.TEST_ORIGIN ?? "http://localhost:18080";
 const FAKE_HA = process.env.TEST_FAKE_HA ?? "http://127.0.0.1:18123";
-const [OWNER_TOKEN, GUEST_TOKEN, DOOR_URL] = process.argv.slice(2);
-if (!OWNER_TOKEN || !GUEST_TOKEN || !DOOR_URL) {
+const [OWNER_TOKEN, GUEST_TOKEN, DOOR_URL, KEYPAD_URL] = process.argv.slice(2);
+if (!OWNER_TOKEN || !GUEST_TOKEN || !DOOR_URL || !KEYPAD_URL) {
   throw new Error(
-    "usage: bun test/door-fingerprint.ts <owner-token> <guest-token> <door-action-url>",
+    "usage: bun test/door-fingerprint.ts <owner-token> <guest-token> <door-action-url> <keypad-url>",
   );
 }
 
@@ -42,6 +44,25 @@ const unlocks = () => haCalls("/api/services/lock/unlock");
 const locks = () => haCalls("/api/services/lock/lock");
 const scripts = () => haCalls("/api/services/script/turn_on");
 
+/** The doorkey CLI, for the steps an admin would take. */
+async function cli(...args: string[]): Promise<void> {
+  const p = Bun.spawn(["bun", "cli/doorkey.ts", ...args], {
+    env: { ...process.env, DOORKEY_TAP_MODE: "static" },
+    stdout: "ignore",
+  });
+  if ((await p.exited) !== 0) throw new Error(`cli ${args.join(" ")} failed`);
+}
+
+/** The door action's begin, as the keypad page would call it. */
+const begin = (page: Page) =>
+  page.evaluate(async () => {
+    const res = await fetch("/a/api/begin", { method: "POST" });
+    return { status: res.status, label: ((await res.json().catch(() => ({}))) as any).label };
+  });
+
+const hasFingerprintCookie = (page: Page) =>
+  page.evaluate(() => document.cookie.split("; ").includes("doorkey_fp=1"));
+
 const browser = await puppeteer.launch({
   executablePath: process.env.CHROME_PATH ?? "/usr/bin/google-chrome-stable",
   headless: true,
@@ -49,9 +70,12 @@ const browser = await puppeteer.launch({
   args: ["--no-sandbox", "--disable-dev-shm-usage"],
 });
 
-/** A tab with its own virtual authenticator: one "phone". */
+/**
+ * One "phone": its own browser context (own cookies, like a real phone) and
+ * its own virtual authenticator.
+ */
 async function phone(): Promise<Page> {
-  const page = await browser.newPage();
+  const page = await (await browser.createBrowserContext()).newPage();
   page.on("pageerror", (e) => console.log(`  [pageerror] ${e.message}`));
   const cdp = await page.createCDPSession();
   await cdp.send("WebAuthn.enable");
@@ -109,6 +133,18 @@ try {
   const guest = await phone();
   check("the owner enrols a passkey", await enroll(owner, OWNER_TOKEN));
   check("the guest enrols a passkey", await enroll(guest, GUEST_TOKEN));
+  check("enrolling a door passkey marks the phone for fingerprint", await hasFingerprintCookie(owner));
+  check("a passkey that may not open the door does not", !(await hasFingerprintCookie(guest)));
+
+  // --- the keypad tap opens the door action too ------------------------------
+  await tap(owner, KEYPAD_URL);
+  const offered = await begin(owner);
+  check("a keypad tap offers the door action", offered.status === 200 && offered.label === "Front door");
+
+  await cli("action:disable", "front-door");
+  await tap(owner, KEYPAD_URL);
+  check("a disabled door action is not offered on the keypad", (await begin(owner)).status === 401);
+  await cli("action:enable", "front-door");
 
   // --- the door action from its own tag URL ---------------------------------
   // The fake HA logs the whole e2e run: compare counts, not totals.

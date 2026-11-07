@@ -87,6 +87,16 @@ function doorPaused(): boolean {
   return doorFailures.length >= DOOR_FAILURES;
 }
 
+/**
+ * Remembers on this phone that its owner opens the door by fingerprint, so
+ * the keypad starts with that button. Not a secret and not a credential -
+ * the passkey decides - so it is readable by the page, and set by the server
+ * because Safari caps cookies a script writes at seven days.
+ */
+export const FINGERPRINT_COOKIE = "doorkey_fp";
+const fingerprintCookie = () =>
+  `${FINGERPRINT_COOKIE}=1; Secure; SameSite=Lax; Path=/; Max-Age=${365 * 86_400}`;
+
 async function page(c: Context) {
   c.header("Cache-Control", "no-store");
   c.header("Referrer-Policy", "no-referrer");
@@ -143,6 +153,8 @@ actions.post("/api/enroll/:token/verify", async (c) => {
     clientIp(c),
   );
   if (!ok) return c.json({ error: "verification failed" }, 400);
+  const door = await db.findDoorAction();
+  if (door && (await db.userMayRun(found.user.id, door.id))) c.header("Set-Cookie", fingerprintCookie());
   return c.json({ ok: true, user: found.user.name });
 });
 
@@ -239,6 +251,7 @@ actions.post("/api/run", async (c) => {
     return c.json({ error: "home assistant unavailable" }, 502);
   }
 
+  if (door) c.header("Set-Cookie", fingerprintCookie(), { append: true });
   await db.markActionRun(action.id);
   await db.logActionEvent({ ...base, result: "ran", userId: user.id });
   void ha.notify(
@@ -275,6 +288,24 @@ async function openSession(
   }
   c.header("Set-Cookie", session.cookieHeader(session.issue(action.slug, tap.via, tap.tagId)));
   return null;
+}
+
+/**
+ * A door tap that shows the keypad also opens the door action, when there is
+ * one it allows: the keypad then offers "open with fingerprint" next to the
+ * code. The same session as a tap on the action's own tag, so the same
+ * passkey, RBAC and one-run checks apply. Null: no fingerprint this time.
+ */
+export async function doorActionCookie(
+  c: Context,
+  via: "sun" | "token",
+  tagId: number | null,
+): Promise<string | null> {
+  const door = await db.findDoorAction();
+  if (!door || !door.active) return null;
+  if (door.require_sun && via !== "sun") return null;
+  if (door.home_only && !atHome(c)) return null;
+  return session.cookieHeader(session.issue(door.slug, via, tagId));
 }
 
 /**
